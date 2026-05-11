@@ -1,6 +1,12 @@
 import { Schema, model } from "mongoose";
 
 const userSchema = new Schema({
+    firebaseUid: {
+        type: String,
+        required: [true, "O firebaseUid é obrigatório"],
+        unique: true,
+        index: true
+    },
     nome: {
         type: String,
         required: [true, "O nome é obrigatório"],
@@ -15,8 +21,7 @@ const userSchema = new Schema({
     },
     passwordHash: {
         type: String,
-        required: [true, "A senha é obrigatória"],
-        select: false 
+        select: false
     },
     telefone: {
         type: String,
