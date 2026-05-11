@@ -9,19 +9,20 @@ const rideSchema = new Schema({
   destino: { type: String, required: true },
   distanciaKm: { type: Number, required: true },
   valor: { type: Number, required: true },
-  status: { 
-    type: String, 
-    enum: ['pendente', 'em_andamento', 'concluida', 'cancelada'], 
-    default: 'pendente' 
+  status: {
+    type: String,
+    enum: ['pendente', 'em_andamento', 'concluida', 'cancelada'],
+    default: 'pendente'
   },
   data: { type: String, required: true },
   hora: { type: String, required: true }
 }, { timestamps: true });
 
-rideSchema.post('save', async function(doc) {
+// Notificação ao criar nova corrida
+rideSchema.post('save', async function (doc) {
   try {
     const driver = await Driver.findById(doc.driverId);
-    
+
     if (driver) {
       await Notification.create({
         userId: driver.userId,
@@ -37,13 +38,26 @@ rideSchema.post('save', async function(doc) {
   }
 });
 
-rideSchema.post('findOneAndUpdate', async function(doc) {
+// Notificação + atualização de lucro ao mudar status da corrida.
+// Requer { new: true } no findOneAndUpdate para receber o doc atualizado.
+rideSchema.post('findOneAndUpdate', async function (doc) {
   if (!doc) return;
 
   try {
     const driver = await Driver.findById(doc.driverId);
     if (!driver) return;
 
+    // Atualiza estatísticas do motorista ao concluir corrida
+    if (doc.status === 'concluida') {
+      await Driver.findByIdAndUpdate(doc.driverId, {
+        $inc: {
+          lucroTotal: doc.valor,
+          totalCorridas: 1
+        }
+      });
+    }
+
+    // Notificações de mudança de status
     let notificationData = {
       userId: driver.userId,
       rideId: doc._id,
@@ -61,13 +75,17 @@ rideSchema.post('findOneAndUpdate', async function(doc) {
       notificationData.tipo = 'corrida_aceita';
       notificationData.titulo = 'Corrida Confirmada';
       notificationData.corpo = `Tudo pronto! Inicie o trajeto para ${doc.destino}.`;
+    } else if (doc.status === 'concluida') {
+      notificationData.tipo = 'corrida_concluida';
+      notificationData.titulo = 'Corrida Concluída';
+      notificationData.corpo = `Corrida de ${doc.passageiroNome} concluída. +R$ ${doc.valor.toFixed(2)} no seu lucro.`;
     }
 
     if (notificationData.tipo) {
       await Notification.create(notificationData);
     }
   } catch (error) {
-    console.error('Erro ao atualizar notificação:', error);
+    console.error('Erro ao processar hook de corrida:', error);
   }
 });
 

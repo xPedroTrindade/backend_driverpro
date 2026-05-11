@@ -5,6 +5,6 @@ const vehicleSchema = new Schema({
   modelo: { type: String, required: true },
   placa: { type: String, required: true, unique: true },
   consumoMedio: { type: Number }
-});
+}, { timestamps: true });
 
 export default model('Vehicle', vehicleSchema);
