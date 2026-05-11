@@ -2,6 +2,17 @@ import { Request, Response, NextFunction } from 'express';
 import admin from '../config/firebase';
 import User from '../models/User';
 
+export interface AuthenticatedRequest extends Request {
+  user: {
+    _id: any;
+    firebaseUid: string;
+    nome: string;
+    email: string;
+    tipo: 'motorista' | 'passageiro';
+    [key: string]: any;
+  };
+}
+
 export const authMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   const authHeader = req.headers.authorization;
 
@@ -22,7 +33,7 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
       return;
     }
 
-    req.user = user as any;
+    (req as AuthenticatedRequest).user = user as any;
     next();
   } catch {
     res.status(401).json({ error: 'Token inválido ou expirado.' });

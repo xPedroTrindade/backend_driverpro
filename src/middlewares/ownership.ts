@@ -1,9 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import Driver from '../models/Driver';
+import { AuthenticatedRequest } from './auth';
 
 // Garante que o driverId da rota pertence ao usuário autenticado.
 // Deve ser usado DEPOIS do authMiddleware.
 export const ownershipMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  const authReq = req as AuthenticatedRequest;
   const driverId = req.params.driverId ?? req.body?.driverId;
 
   if (!driverId) {
@@ -19,7 +21,7 @@ export const ownershipMiddleware = async (req: Request, res: Response, next: Nex
       return;
     }
 
-    if (driver.userId.toString() !== req.user!._id.toString()) {
+    if (driver.userId.toString() !== authReq.user._id.toString()) {
       res.status(403).json({ error: 'Acesso negado: este recurso pertence a outro usuário.' });
       return;
     }
