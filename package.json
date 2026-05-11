@@ -11,7 +11,8 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "firebase-admin": "^13.9.0",
-    "mongoose": "^9.6.1"
+    "mongoose": "^9.6.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",

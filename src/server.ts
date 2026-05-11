@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import connectDB from './config/database';
 
+import authRoutes from './routes/Auth';
 import driverRoutes from './routes/Driver';
 import rideRoutes from './routes/Ride';
 import vehicleRoutes from './routes/Vehicle';
@@ -18,6 +19,7 @@ connectDB();
 app.use(cors());
 app.use(express.json());
 
+app.use('/auth', authRoutes);
 app.use('/api/drivers', driverRoutes);
 app.use('/api/rides', rideRoutes);
 app.use('/api/vehicles', vehicleRoutes);
