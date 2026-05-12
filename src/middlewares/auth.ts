@@ -3,14 +3,7 @@ import admin from '../config/firebase';
 import User from '../models/User';
 
 export interface AuthenticatedRequest extends Request {
-  user: {
-    _id: any;
-    firebaseUid: string;
-    nome: string;
-    email: string;
-    tipo: 'motorista' | 'passageiro';
-    [key: string]: any;
-  };
+  user: any;
 }
 
 export const authMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {

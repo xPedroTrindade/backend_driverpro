@@ -1,11 +1,13 @@
 import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
 import { RegisterInput } from '../validators/authValidator';
 import User from '../models/User';
 import Driver from '../models/Driver';
 import Passenger from '../models/Passenger';
 
+const JWT_EXPIRES_IN = '7d';
+
 export const registerUser = async (firebaseUid: string, data: RegisterInput) => {
-  // Verifica duplicata antes de abrir a transação (evita lock desnecessário)
   const existing = await User.findOne({
     $or: [{ email: data.email }, { firebaseUid }]
   });
@@ -27,7 +29,8 @@ export const registerUser = async (firebaseUid: string, data: RegisterInput) => 
         nome: data.nome,
         email: data.email,
         telefone: data.telefone,
-        tipo: data.tipo
+        tipo: data.tipo,
+        passwordHash: data.senha  // o pre-save hook do User faz o hash automaticamente
       }],
       { session }
     );
@@ -40,12 +43,21 @@ export const registerUser = async (firebaseUid: string, data: RegisterInput) => 
 
     await session.commitTransaction();
 
+    const token = jwt.sign(
+      { id: user._id, tipo: user.tipo },
+      process.env.JWT_SECRET!,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
     return {
-      _id: user._id,
-      nome: user.nome,
-      email: user.email,
-      tipo: user.tipo,
-      createdAt: user.createdAt
+      token,
+      user: {
+        _id: user._id,
+        nome: user.nome,
+        email: user.email,
+        tipo: user.tipo,
+        createdAt: user.createdAt
+      }
     };
   } catch (err) {
     await session.abortTransaction();

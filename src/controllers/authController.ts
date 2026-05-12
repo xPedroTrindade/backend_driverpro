@@ -9,9 +9,9 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     const payload = registerSchema.parse(req.body);
     const { firebaseUid } = req as FirebaseRequest;
 
-    const user = await registerUser(firebaseUid, payload);
+    const result = await registerUser(firebaseUid, payload);
 
-    res.status(201).json({ user });
+    res.status(201).json(result);
   } catch (err) {
     if (err instanceof ZodError) {
       res.status(422).json({
