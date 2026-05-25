@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { Types } from 'mongoose';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { RegisterInput } from '../validators/authValidator';
@@ -6,7 +7,7 @@ import User from '../models/User';
 import Driver from '../models/Driver';
 import Passenger from '../models/Passenger';
 
-async function getDriverInfo(userId: mongoose.Types.ObjectId) {
+async function getDriverInfo(userId: Types.ObjectId) {
   const driver = await Driver.findOne({ userId }).select('_id precoKm disponivel');
   return driver ? { driverId: driver._id.toString(), precoKm: driver.precoKm, disponivel: driver.disponivel } : null;
 }
