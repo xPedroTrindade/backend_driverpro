@@ -1,36 +1,42 @@
+import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import { RegisterInput } from '../validators/authValidator';
 import User from '../models/User';
 import Driver from '../models/Driver';
 import Passenger from '../models/Passenger';
 
+async function getDriverInfo(userId: mongoose.Types.ObjectId) {
+  const driver = await Driver.findOne({ userId }).select('_id precoKm disponivel');
+  return driver ? { driverId: driver._id.toString(), precoKm: driver.precoKm, disponivel: driver.disponivel } : null;
+}
+
 const JWT_EXPIRES_IN = '7d';
 
-export const registerUser = async (firebaseUid: string, data: RegisterInput) => {
-  const existing = await User.findOne({
-    $or: [{ email: data.email }, { firebaseUid }]
-  });
+function signToken(id: unknown, tipo: string) {
+  return jwt.sign({ id, tipo }, process.env.JWT_SECRET!, { expiresIn: JWT_EXPIRES_IN });
+}
+
+export const registerUser = async (data: RegisterInput) => {
+  const existing = await User.findOne({ email: data.email });
 
   if (existing) {
-    const conflict = existing.email === data.email ? 'email' : 'conta Firebase';
-    throw { status: 409, message: `Este ${conflict} já está cadastrado.` };
+    throw { status: 409, message: 'Este email já está cadastrado.' };
   }
 
-  // Transação: garante que User + Driver/Passenger são criados juntos.
-  // Se qualquer operação falhar, tudo é revertido (equivalente ao ROLLBACK).
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const [user] = await User.create(
       [{
-        firebaseUid,
+        firebaseUid: randomUUID(),
         nome: data.nome,
         email: data.email,
         telefone: data.telefone,
         tipo: data.tipo,
-        passwordHash: data.senha  // o pre-save hook do User faz o hash automaticamente
+        passwordHash: data.senha,
       }],
       { session }
     );
@@ -43,21 +49,12 @@ export const registerUser = async (firebaseUid: string, data: RegisterInput) => 
 
     await session.commitTransaction();
 
-    const token = jwt.sign(
-      { id: user._id, tipo: user.tipo },
-      process.env.JWT_SECRET!,
-      { expiresIn: JWT_EXPIRES_IN }
-    );
+    const driverInfo = data.tipo === 'motorista' ? await getDriverInfo(user._id) : null;
 
     return {
-      token,
-      user: {
-        _id: user._id,
-        nome: user.nome,
-        email: user.email,
-        tipo: user.tipo,
-        createdAt: user.createdAt
-      }
+      token: signToken(user._id, user.tipo),
+      user: { _id: user._id, nome: user.nome, email: user.email, tipo: user.tipo },
+      ...(driverInfo && { driverId: driverInfo.driverId, driver: driverInfo }),
     };
   } catch (err) {
     await session.abortTransaction();
@@ -65,4 +62,25 @@ export const registerUser = async (firebaseUid: string, data: RegisterInput) => 
   } finally {
     session.endSession();
   }
+};
+
+export const loginUser = async (email: string, senha: string) => {
+  const user = await User.findOne({ email }).select('+passwordHash');
+
+  if (!user || !user.passwordHash) {
+    throw { status: 401, message: 'Email ou senha inválidos.' };
+  }
+
+  const match = await bcrypt.compare(senha, user.passwordHash);
+  if (!match) {
+    throw { status: 401, message: 'Email ou senha inválidos.' };
+  }
+
+  const driverInfo = user.tipo === 'motorista' ? await getDriverInfo(user._id) : null;
+
+  return {
+    token: signToken(user._id, user.tipo),
+    user: { _id: user._id, nome: user.nome, email: user.email, tipo: user.tipo, avatarUrl: user.avatarUrl },
+    ...(driverInfo && { driverId: driverInfo.driverId, driver: driverInfo }),
+  };
 };

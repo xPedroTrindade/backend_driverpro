@@ -1,22 +1,13 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { authMiddleware } from '../middlewares/auth';
-import { ownershipMiddleware } from '../middlewares/ownership';
+import { createRide, requestRide, getRidesByDriver, getRidesByPassenger, updateRideStatus } from '../controllers/rideController';
 
 const router = Router();
 
-// POST /api/rides — criar corrida (driverId vem do body)
-router.post('/', authMiddleware, ownershipMiddleware, (_req: Request, res: Response) => {
-  res.status(501).json({ message: 'Controller ainda não implementado.' });
-});
-
-// GET /api/rides/driver/:driverId — listar corridas do motorista
-router.get('/driver/:driverId', authMiddleware, ownershipMiddleware, (_req: Request, res: Response) => {
-  res.status(501).json({ message: 'Controller ainda não implementado.' });
-});
-
-// PUT /api/rides/:rideId/status — aceitar / concluir / cancelar
-router.put('/:rideId/status', authMiddleware, (_req: Request, res: Response) => {
-  res.status(501).json({ message: 'Controller ainda não implementado.' });
-});
+router.post('/', authMiddleware, createRide);
+router.post('/request', authMiddleware, requestRide);
+router.get('/driver/:driverId', authMiddleware, getRidesByDriver);
+router.get('/passenger/:userId', authMiddleware, getRidesByPassenger);
+router.put('/:rideId/status', authMiddleware, updateRideStatus);
 
 export default router;

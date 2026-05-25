@@ -9,6 +9,7 @@ import rideRoutes from './routes/Ride';
 import vehicleRoutes from './routes/Vehicle';
 import unavailablePeriodRoutes from './routes/UnavailablePeriod';
 import notificationRoutes from './routes/Notification';
+import userRoutes from './routes/User';
 
 dotenv.config();
 const app: Application = express();
@@ -25,6 +26,7 @@ app.use('/api/rides', rideRoutes);
 app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/unavailable-periods', unavailablePeriodRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/users', userRoutes);
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });

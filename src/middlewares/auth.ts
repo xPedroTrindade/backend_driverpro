@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import admin from '../config/firebase';
+import jwt from 'jsonwebtoken';
 import User from '../models/User';
 
 export interface AuthenticatedRequest extends Request {
@@ -17,16 +17,16 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = await admin.auth().verifyIdToken(token);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { id: string; tipo: string };
 
-    const user = await User.findOne({ firebaseUid: decoded.uid });
+    const user = await User.findById(decoded.id);
 
     if (!user) {
-      res.status(401).json({ error: 'Usuário não encontrado. Faça o cadastro primeiro.' });
+      res.status(401).json({ error: 'Usuário não encontrado.' });
       return;
     }
 
-    (req as AuthenticatedRequest).user = user as any;
+    (req as AuthenticatedRequest).user = user;
     next();
   } catch {
     res.status(401).json({ error: 'Token inválido ou expirado.' });

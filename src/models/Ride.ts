@@ -4,6 +4,7 @@ import Driver from './Driver';
 
 const rideSchema = new Schema({
   driverId: { type: Schema.Types.ObjectId, ref: 'Driver', required: true },
+  passageiroId: { type: Schema.Types.ObjectId, ref: 'User' },
   passageiroNome: { type: String, required: true },
   origem: { type: String, required: true },
   destino: { type: String, required: true },
