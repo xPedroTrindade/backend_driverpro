@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { RegisterInput } from '../validators/authValidator';
@@ -20,48 +19,32 @@ function signToken(id: unknown, tipo: string) {
 
 export const registerUser = async (data: RegisterInput) => {
   const existing = await User.findOne({ email: data.email });
-
   if (existing) {
     throw { status: 409, message: 'Este email já está cadastrado.' };
   }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  const user = await User.create({
+    firebaseUid: randomUUID(),
+    nome: data.nome,
+    email: data.email,
+    telefone: data.telefone,
+    tipo: data.tipo,
+    passwordHash: data.senha,
+  });
 
-  try {
-    const [user] = await User.create(
-      [{
-        firebaseUid: randomUUID(),
-        nome: data.nome,
-        email: data.email,
-        telefone: data.telefone,
-        tipo: data.tipo,
-        passwordHash: data.senha,
-      }],
-      { session }
-    );
-
-    if (data.tipo === 'motorista') {
-      await Driver.create([{ userId: user._id, precoKm: data.precoKm! }], { session });
-    } else {
-      await Passenger.create([{ userId: user._id }], { session });
-    }
-
-    await session.commitTransaction();
-
-    const driverInfo = data.tipo === 'motorista' ? await getDriverInfo(user._id) : null;
-
-    return {
-      token: signToken(user._id, user.tipo),
-      user: { _id: user._id, nome: user.nome, email: user.email, tipo: user.tipo },
-      ...(driverInfo && { driverId: driverInfo.driverId, driver: driverInfo }),
-    };
-  } catch (err) {
-    await session.abortTransaction();
-    throw err;
-  } finally {
-    session.endSession();
+  if (data.tipo === 'motorista') {
+    await Driver.create({ userId: user._id, precoKm: data.precoKm! });
+  } else {
+    await Passenger.create({ userId: user._id });
   }
+
+  const driverInfo = data.tipo === 'motorista' ? await getDriverInfo(user._id) : null;
+
+  return {
+    token: signToken(user._id, user.tipo),
+    user: { _id: user._id, nome: user.nome, email: user.email, tipo: user.tipo },
+    ...(driverInfo && { driverId: driverInfo.driverId, driver: driverInfo }),
+  };
 };
 
 export const loginUser = async (email: string, senha: string) => {
