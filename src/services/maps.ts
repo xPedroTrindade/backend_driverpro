@@ -63,3 +63,44 @@ export async function computeRoutes(
         };
     });
 }
+
+// Autocomplete de endereços (Google Places API New)
+export async function autocomplete(query: string): Promise<{ placeId: string; description: string }[]> {
+    const key = process.env.GOOGLE_MAPS_API_KEY;
+    if (!key) return [];
+
+    const resp = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key },
+        body: JSON.stringify({ input: query, includedRegionCodes: ['br'], languageCode: 'pt-BR' }),
+    });
+    if (!resp.ok) return [];
+
+    const json: any = await resp.json();
+    const suggestions: any[] = Array.isArray(json.suggestions) ? json.suggestions : [];
+    return suggestions
+        .filter((s) => s.placePrediction)
+        .map((s) => ({
+            placeId: s.placePrediction.placeId,
+            description: s.placePrediction.text?.text ?? '',
+        }));
+}
+
+// Detalhes de um lugar (coordenadas) pelo placeId
+export async function placeDetails(placeId: string): Promise<{ lat: number; lon: number; displayName: string } | null> {
+    const key = process.env.GOOGLE_MAPS_API_KEY;
+    if (!key) return null;
+
+    const resp = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`, {
+        headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': 'location,formattedAddress,displayName' },
+    });
+    if (!resp.ok) return null;
+
+    const json: any = await resp.json();
+    if (!json.location) return null;
+    return {
+        lat: json.location.latitude,
+        lon: json.location.longitude,
+        displayName: json.formattedAddress ?? json.displayName?.text ?? '',
+    };
+}
