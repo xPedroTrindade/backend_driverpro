@@ -9,11 +9,11 @@ const rideSchema = new Schema({
   origem: { type: String, required: true },
   destino: { type: String, required: true },
   distanciaKm: { type: Number, required: true },
-  valor: { type: Number, required: true },
+  valor: { type: Number, default: 0 },
   status: {
     type: String,
-    enum: ['pendente', 'em_andamento', 'concluida', 'cancelada'],
-    default: 'pendente'
+    enum: ['aguardando_orcamento', 'aguardando_confirmacao', 'confirmada', 'pendente', 'em_andamento', 'concluida', 'cancelada'],
+    default: 'aguardando_orcamento'
   },
   data: { type: String, required: true },
   hora: { type: String, required: true }

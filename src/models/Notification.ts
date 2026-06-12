@@ -8,7 +8,7 @@ const notificationSchema = new Schema({
   },
   tipo: { 
     type: String, 
-    enum: ['corrida_cancelada', 'nova_corrida', 'corrida_aceita', 'corrida_concluida'],
+    enum: ['corrida_cancelada', 'nova_corrida', 'corrida_aceita', 'corrida_concluida', 'orcamento_recebido', 'corrida_confirmada'],
     required: true 
   },
   titulo: { 

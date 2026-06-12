@@ -2,7 +2,7 @@ import { Schema, model } from 'mongoose';
 
 const driverSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-  precoKm: { type: Number, required: true },
+  precoKm: { type: Number, default: 0 },
   contaVerificada: { type: Boolean, default: false },
   disponivel: { type: Boolean, default: true },
   totalCorridas: { type: Number, default: 0 },

@@ -19,15 +19,13 @@ export const registerSchema = z.object({
     error: 'Tipo deve ser "motorista" ou "passageiro".'
   }),
 
+  // Preço por km é OPCIONAL no cadastro — o motorista define depois, nas Configurações
   precoKm: z.number({ error: 'Preço por km deve ser um número.' })
     .positive('Preço por km deve ser maior que zero.')
     .max(50, 'Preço por km não pode ultrapassar R$ 50.')
     .optional()
 
-}).refine(
-  (data) => data.tipo !== 'motorista' || data.precoKm !== undefined,
-  { message: 'Preço por km é obrigatório para motoristas.', path: ['precoKm'] }
-);
+});
 
 export type RegisterInput = z.infer<typeof registerSchema>;
 

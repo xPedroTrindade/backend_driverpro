@@ -34,7 +34,7 @@ export const registerUser = async (data: RegisterInput) => {
   });
 
   if (data.tipo === 'motorista') {
-    await Driver.create({ userId: user._id, precoKm: data.precoKm! });
+    await Driver.create({ userId: user._id, precoKm: data.precoKm ?? 0 });
   } else {
     await Passenger.create({ userId: user._id });
   }
