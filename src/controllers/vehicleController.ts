@@ -9,6 +9,10 @@ const vehicleSchema = z.object({
   modelo: z.string().min(2).trim(),
   placa: z.string().min(7).max(8).trim().toUpperCase(),
   consumoMedio: z.number().positive().optional(),
+  lugares: z.number().int().positive().max(100).optional(),
+  aceitaPets: z.boolean().optional(),
+  aceitaCadeirinha: z.boolean().optional(),
+  aceitaVolumes: z.boolean().optional(),
 });
 
 const updateVehicleSchema = vehicleSchema.omit({ driverId: true }).partial()
