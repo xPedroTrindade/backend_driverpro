@@ -10,6 +10,15 @@ const rideSchema = new Schema({
   destino: { type: String, required: true },
   distanciaKm: { type: Number, required: true },
   valor: { type: Number, default: 0 },
+  idaVolta: { type: Boolean, default: false },
+  taxaEspera: { type: Number, default: 0 },
+  pedagio: { type: Number, default: 0 },
+  consumoMedio: { type: Number },
+  combustivelPreco: { type: Number, default: 0 },
+  precoKm: { type: Number, default: 0 },
+  custoCombustivel: { type: Number, default: 0 },
+  custoTotal: { type: Number, default: 0 },
+  lucroLiquido: { type: Number },
   status: {
     type: String,
     enum: ['aguardando_orcamento', 'aguardando_confirmacao', 'confirmada', 'pendente', 'em_andamento', 'concluida', 'cancelada'],
@@ -52,7 +61,7 @@ rideSchema.post('findOneAndUpdate', async function (doc) {
     if (doc.status === 'concluida') {
       await Driver.findByIdAndUpdate(doc.driverId, {
         $inc: {
-          lucroTotal: doc.valor,
+          lucroTotal: doc.lucroLiquido ?? doc.valor,
           totalCorridas: 1
         }
       });
@@ -79,7 +88,7 @@ rideSchema.post('findOneAndUpdate', async function (doc) {
     } else if (doc.status === 'concluida') {
       notificationData.tipo = 'corrida_concluida';
       notificationData.titulo = 'Corrida Concluída';
-      notificationData.corpo = `Corrida de ${doc.passageiroNome} concluída. +R$ ${doc.valor.toFixed(2)} no seu lucro.`;
+      notificationData.corpo = `Corrida de ${doc.passageiroNome} concluída. +R$ ${(doc.lucroLiquido ?? doc.valor).toFixed(2)} no seu lucro.`;
     }
 
     if (notificationData.tipo) {
