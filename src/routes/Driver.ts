@@ -10,6 +10,8 @@ import {
   getNextRide,
   getPendingCount,
   getScheduleMonth,
+  registerPassenger,
+  listDriverPassengers,
 } from '../controllers/driverController';
 
 const router = Router();
@@ -22,5 +24,7 @@ router.get('/:driverId/summary', authMiddleware, ownershipMiddleware, getTodaySu
 router.get('/:driverId/next-ride', authMiddleware, ownershipMiddleware, getNextRide);
 router.get('/:driverId/pending-count', authMiddleware, ownershipMiddleware, getPendingCount);
 router.get('/:driverId/schedule', authMiddleware, ownershipMiddleware, getScheduleMonth);
+router.post('/:driverId/passengers', authMiddleware, ownershipMiddleware, registerPassenger);
+router.get('/:driverId/passengers', authMiddleware, ownershipMiddleware, listDriverPassengers);
 
 export default router;

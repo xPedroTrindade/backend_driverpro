@@ -18,6 +18,7 @@ const requestRideSchema = z.object({
 
 const createRideSchema = z.object({
   driverId: z.string().min(1),
+  passageiroId: z.string().optional(),
   passageiroNome: z.string().min(2).trim(),
   origem: z.string().min(2).trim(),
   destino: z.string().min(2).trim(),
