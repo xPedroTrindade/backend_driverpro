@@ -10,9 +10,17 @@ const updateProfileSchema = z.object({
   telefone: z.string().min(10).max(15).optional(),
 }).refine(data => Object.keys(data).length > 0, { message: 'Nenhum campo para atualizar.' });
 
+// Campos visíveis para outros usuários (sem email/telefone)
+const PUBLIC_PROFILE_FIELDS = 'nome tipo avatarUrl';
+
 export const getProfile = async (req: Request, res: Response): Promise<void> => {
   try {
-    const user = await User.findById(req.params.id);
+    const authReq = req as AuthenticatedRequest;
+    const isSelf = authReq.user._id.toString() === req.params.id;
+
+    const user = isSelf
+      ? await User.findById(req.params.id)
+      : await User.findById(req.params.id).select(PUBLIC_PROFILE_FIELDS);
     if (!user) { res.status(404).json({ error: 'Usuário não encontrado.' }); return; }
     res.json(user);
   } catch {

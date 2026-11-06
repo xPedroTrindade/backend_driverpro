@@ -135,10 +135,16 @@ export const requestRide = async (req: Request, res: Response): Promise<void> =>
 // GET /api/rides/passenger/:userId
 export const getRidesByPassenger = async (req: Request, res: Response): Promise<void> => {
   try {
+    const authReq = req as AuthenticatedRequest;
+    if (req.params.userId !== authReq.user._id.toString()) {
+      res.status(403).json({ error: 'Acesso negado.' }); return;
+    }
+
     const filter: Record<string, any> = { passageiroId: req.params.userId };
     if (req.query.status) filter.status = req.query.status;
     const rides = await Ride.find(filter)
-      .populate({ path: 'driverId', populate: { path: 'userId', select: 'nome' } })
+      // Só o necessário do motorista — sem lucroTotal/totalCorridas
+      .populate({ path: 'driverId', select: 'userId precoKm', populate: { path: 'userId', select: 'nome avatarUrl' } })
       .sort({ data: 1, hora: 1 });
     res.json(rides);
   } catch {

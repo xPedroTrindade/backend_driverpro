@@ -11,7 +11,8 @@ import Vehicle from '../models/Vehicle';
 // GET /api/drivers — lista todos os motoristas com veículo (para passageiros)
 export const listDrivers = async (req: Request, res: Response): Promise<void> => {
   try {
-    const drivers = await Driver.find().populate('userId', 'nome email avatarUrl');
+    // Visão pública: sem email do motorista e sem dados financeiros (lucroTotal)
+    const drivers = await Driver.find().select('-lucroTotal').populate('userId', 'nome avatarUrl');
     const driverIds = drivers.map(d => d._id);
     const vehicles = await Vehicle.find({ driverId: { $in: driverIds } });
     const vehicleMap = new Map(vehicles.map(v => [v.driverId.toString(), v]));
