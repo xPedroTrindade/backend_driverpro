@@ -53,6 +53,12 @@ rideSchema.post('save', async function (doc) {
 rideSchema.post('findOneAndUpdate', async function (doc) {
   if (!doc) return;
 
+  // Só reage se ESTE update definiu o status. Sem isso, qualquer findOneAndUpdate
+  // numa corrida já concluída (ex.: editar outro campo) somaria o lucro de novo.
+  const update: any = this.getUpdate() ?? {};
+  const statusDefinido = update.$set?.status ?? update.status;
+  if (!statusDefinido) return;
+
   try {
     const driver = await Driver.findById(doc.driverId);
     if (!driver) return;

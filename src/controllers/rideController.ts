@@ -41,6 +41,22 @@ const statusSchema = z.object({
   status: z.enum(['em_andamento', 'concluida', 'cancelada']),
 });
 
+type Papel = 'motorista' | 'passageiro';
+type StatusAlvo = z.infer<typeof statusSchema>['status'];
+
+// Máquina de estados: status atual -> status de destino -> quem pode fazer a transição.
+// O papel vem da relação com a corrida (dono do driverId ou passageiroId), não do user.tipo.
+// 'pendente' é o fluxo legado (corrida manual); 'confirmada' é o fluxo de orçamento.
+const TRANSICOES: Record<string, Partial<Record<StatusAlvo, Papel[]>>> = {
+  aguardando_orcamento:   { cancelada: ['motorista', 'passageiro'] },
+  aguardando_confirmacao: { cancelada: ['motorista', 'passageiro'] },
+  confirmada:             { em_andamento: ['motorista'], cancelada: ['motorista', 'passageiro'] },
+  pendente:               { em_andamento: ['motorista'], cancelada: ['motorista', 'passageiro'] },
+  em_andamento:           { concluida: ['motorista'], cancelada: ['motorista', 'passageiro'] },
+  concluida:              {},
+  cancelada:              {},
+};
+
 // 5.1 — POST /api/rides
 export const createRide = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -134,17 +150,43 @@ export const getRidesByPassenger = async (req: Request, res: Response): Promise<
 export const updateRideStatus = async (req: Request, res: Response): Promise<void> => {
   try {
     const { status } = statusSchema.parse(req.body);
+    const authReq = req as AuthenticatedRequest;
+    const userId = authReq.user._id.toString();
 
-    const ride = await Ride.findOneAndUpdate(
-      { _id: req.params.rideId },
+    const ride = await Ride.findById(req.params.rideId);
+    if (!ride) { res.status(404).json({ error: 'Corrida não encontrada.' }); return; }
+
+    // Descobre o papel do usuário NESTA corrida
+    const driver = await Driver.findById(ride.driverId).select('userId');
+    let papel: Papel | null = null;
+    if (driver && driver.userId.toString() === userId) papel = 'motorista';
+    else if (ride.passageiroId && ride.passageiroId.toString() === userId) papel = 'passageiro';
+
+    if (!papel) { res.status(403).json({ error: 'Acesso negado.' }); return; }
+
+    const permitidos = TRANSICOES[ride.status]?.[status];
+    if (!permitidos) {
+      res.status(409).json({ error: `Não é possível mudar a corrida de "${ride.status}" para "${status}".` }); return;
+    }
+    if (!permitidos.includes(papel)) {
+      res.status(403).json({ error: `Apenas o ${permitidos.join(' ou ')} pode fazer esta alteração.` }); return;
+    }
+
+    // Update condicional ao status lido: se outra requisição mudou a corrida no meio
+    // do caminho (ex.: dois "concluir" simultâneos), nada é alterado e o lucro não é somado 2x.
+    const updated = await Ride.findOneAndUpdate(
+      { _id: ride._id, status: ride.status },
       { status },
       { new: true }
     );
 
-    if (!ride) { res.status(404).json({ error: 'Corrida não encontrada.' }); return; }
-    res.json(ride);
+    if (!updated) {
+      res.status(409).json({ error: 'A corrida foi alterada por outra ação. Atualize e tente novamente.' }); return;
+    }
+    res.json(updated);
   } catch (err: any) {
     if (err.name === 'ZodError') { res.status(422).json({ error: err.issues[0].message }); return; }
+    if (err.name === 'CastError') { res.status(400).json({ error: 'ID inválido.' }); return; }
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
 };
