@@ -4,7 +4,6 @@ import { registerSchema, loginSchema } from '../validators/authValidator';
 import { registerUser, loginUser } from '../services/authService';
 
 export const register = async (req: Request, res: Response): Promise<void> => {
-  console.log('[register] body recebido:', JSON.stringify(req.body));
   try {
     const payload = registerSchema.parse(req.body);
     const result = await registerUser(payload);
