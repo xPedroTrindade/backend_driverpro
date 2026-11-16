@@ -1,8 +1,7 @@
-import dotenv from 'dotenv';
+import 'dotenv/config'; // primeiro import: carrega o .env antes de qualquer módulo ler process.env
 import connectDB from './config/database';
 import app from './app';
 
-dotenv.config();
 const PORT = process.env.PORT || 3000;
 
 connectDB();

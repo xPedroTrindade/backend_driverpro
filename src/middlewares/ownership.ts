@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import Driver from '../models/Driver';
+import { prisma } from '../lib/prisma';
 import { AuthenticatedRequest } from './auth';
 
 // Garante que o driverId da rota pertence ao usuário autenticado.
@@ -14,14 +14,15 @@ export const ownershipMiddleware = async (req: Request, res: Response, next: Nex
   }
 
   try {
-    const driver = await Driver.findById(driverId);
+    // ID que não é UUID lança P2023 -> cai no catch (400), como o CastError antes.
+    const driver = await prisma.driver.findUnique({ where: { id: String(driverId) }, select: { userId: true } });
 
     if (!driver) {
       res.status(404).json({ error: 'Motorista não encontrado.' });
       return;
     }
 
-    if (driver.userId.toString() !== authReq.user._id.toString()) {
+    if (driver.userId !== authReq.user.id) {
       res.status(403).json({ error: 'Acesso negado: este recurso pertence a outro usuário.' });
       return;
     }

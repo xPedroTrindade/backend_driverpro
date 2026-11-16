@@ -108,7 +108,7 @@ test('períodos: só o motorista dono cria (403) e motorista inexistente -> 404'
   const body = { driverId: motorista.driverId, dataInicio: '2027-09-01', dataFim: '2027-09-02' };
   assert.equal((await api('POST', '/api/unavailable-periods', { token: outro.token, body })).status, 403);
   assert.equal((await api('POST', '/api/unavailable-periods', { token: passageiro.token, body })).status, 403);
-  assert.equal((await api('POST', '/api/unavailable-periods', { token: motorista.token, body: { ...body, driverId: '64b000000000000000000000' } })).status, 404);
+  assert.equal((await api('POST', '/api/unavailable-periods', { token: motorista.token, body: { ...body, driverId: '00000000-0000-4000-8000-000000000000' } })).status, 404);
 });
 
 // ---------------------------------------------------------------- Notificações
@@ -159,7 +159,7 @@ test('GET /users/:id: próprio perfil completo; de outros só nome, tipo e avata
   assert.equal(other.body.email, undefined);
   assert.equal(other.body.telefone, undefined);
 
-  assert.equal((await api('GET', '/api/users/64b000000000000000000000', { token: motorista.token })).status, 404);
+  assert.equal((await api('GET', '/api/users/00000000-0000-4000-8000-000000000000', { token: motorista.token })).status, 404);
   assert.equal((await api('GET', '/api/users/abc', { token: motorista.token })).status, 400);
 });
 

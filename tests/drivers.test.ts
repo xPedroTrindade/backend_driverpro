@@ -55,7 +55,7 @@ test('GET /drivers/:id: dono vê o perfil completo; outros recebem 403', async (
 });
 
 test('GET /drivers/:id: inexistente -> 404, malformado -> 400', async () => {
-  assert.equal((await api('GET', '/api/drivers/64b000000000000000000000', { token: motorista.token })).status, 404);
+  assert.equal((await api('GET', '/api/drivers/00000000-0000-4000-8000-000000000000', { token: motorista.token })).status, 404);
   assert.equal((await api('GET', '/api/drivers/abc', { token: motorista.token })).status, 400);
 });
 

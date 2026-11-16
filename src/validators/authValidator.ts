@@ -5,7 +5,10 @@ export const registerSchema = z.object({
     .min(2, 'O nome deve ter pelo menos 2 caracteres.')
     .trim(),
 
+  // Normalizado aqui (antes era o `lowercase: true` do Mongoose)
   email: z.string({ error: 'O email é obrigatório.' })
+    .trim()
+    .toLowerCase()
     .email('Email inválido.'),
 
   senha: z.string({ error: 'A senha é obrigatória.' })
@@ -30,7 +33,7 @@ export const registerSchema = z.object({
 export type RegisterInput = z.infer<typeof registerSchema>;
 
 export const loginSchema = z.object({
-  email: z.string().email('Email inválido.'),
+  email: z.string().trim().toLowerCase().email('Email inválido.'),
   senha: z.string().min(1, 'Senha obrigatória.'),
 });
 

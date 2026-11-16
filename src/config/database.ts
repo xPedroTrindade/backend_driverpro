@@ -1,21 +1,17 @@
-import mongoose from 'mongoose';
-import dotenv from 'dotenv';
+import { prisma } from '../lib/prisma';
 
-dotenv.config();
-
+// Abre a conexão no boot para falhar cedo se DATABASE_URL estiver errada.
 const connectDB = async () => {
   try {
-    const mongoURI = process.env.MONGODB_URI;
-
-    if (!mongoURI) {
-      throw new Error("A variável MONGODB_URI não foi definida no .env");
+    if (!process.env.DATABASE_URL) {
+      throw new Error('A variável DATABASE_URL não foi definida no .env');
     }
 
-    await mongoose.connect(mongoURI);
-    
-    console.log("MongoDB Atlas conectado com sucesso!");
+    await prisma.$connect();
+
+    console.log('Postgres (Supabase) conectado com sucesso!');
   } catch (error) {
-    console.error("Erro ao conectar ao MongoDB:", error);
+    console.error('Erro ao conectar ao Postgres:', error);
     process.exit(1);
   }
 };

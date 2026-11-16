@@ -1,9 +1,10 @@
 import { Request, Response } from 'express';
-import mongoose from 'mongoose';
-import { GridFSBucket } from 'mongodb';
 import { z } from 'zod';
 import { AuthenticatedRequest } from '../middlewares/auth';
-import User from '../models/User';
+import { prisma } from '../lib/prisma';
+import { serialize } from '../lib/serialize';
+import { isNotFound, isUuid } from '../lib/errors';
+import { avatarStorage } from '../services/avatarStorage';
 
 const updateProfileSchema = z.object({
   nome: z.string().min(2).trim().optional(),
@@ -11,18 +12,19 @@ const updateProfileSchema = z.object({
 }).refine(data => Object.keys(data).length > 0, { message: 'Nenhum campo para atualizar.' });
 
 // Campos visíveis para outros usuários (sem email/telefone)
-const PUBLIC_PROFILE_FIELDS = 'nome tipo avatarUrl';
+const PUBLIC_PROFILE_FIELDS = { id: true, nome: true, tipo: true, avatarUrl: true } as const;
 
 export const getProfile = async (req: Request, res: Response): Promise<void> => {
   try {
     const authReq = req as AuthenticatedRequest;
-    const isSelf = authReq.user._id.toString() === req.params.id;
+    const id = req.params.id as string;
+    const isSelf = authReq.user.id === id;
 
     const user = isSelf
-      ? await User.findById(req.params.id)
-      : await User.findById(req.params.id).select(PUBLIC_PROFILE_FIELDS);
+      ? await prisma.user.findUnique({ where: { id } })
+      : await prisma.user.findUnique({ where: { id }, select: PUBLIC_PROFILE_FIELDS });
     if (!user) { res.status(404).json({ error: 'Usuário não encontrado.' }); return; }
-    res.json(user);
+    res.json(serialize(user));
   } catch {
     res.status(400).json({ error: 'ID inválido.' });
   }
@@ -31,29 +33,25 @@ export const getProfile = async (req: Request, res: Response): Promise<void> => 
 export const updateProfile = async (req: Request, res: Response): Promise<void> => {
   try {
     const authReq = req as AuthenticatedRequest;
-    if (authReq.user._id.toString() !== req.params.id) {
+    if (authReq.user.id !== req.params.id) {
       res.status(403).json({ error: 'Acesso negado.' }); return;
     }
     const data = updateProfileSchema.parse(req.body);
-    const user = await User.findByIdAndUpdate(req.params.id, data, { new: true });
-    if (!user) { res.status(404).json({ error: 'Usuário não encontrado.' }); return; }
-    res.json(user);
+    const user = await prisma.user.update({ where: { id: authReq.user.id }, data });
+    res.json(serialize(user));
   } catch (err: any) {
     if (err.name === 'ZodError') { res.status(422).json({ error: err.issues[0].message }); return; }
+    if (isNotFound(err)) { res.status(404).json({ error: 'Usuário não encontrado.' }); return; }
     res.status(400).json({ error: 'Requisição inválida.' });
   }
 };
 
-function getBucket(): GridFSBucket {
-  return new GridFSBucket(mongoose.connection.db!, { bucketName: 'avatars' });
-}
-
 export const uploadAvatar = async (req: Request, res: Response): Promise<void> => {
   try {
     const authReq = req as AuthenticatedRequest;
-    const { id } = req.params;
+    const id = req.params.id as string;
 
-    if (authReq.user._id.toString() !== id) {
+    if (authReq.user.id !== id) {
       res.status(403).json({ error: 'Acesso negado: você só pode alterar seu próprio avatar.' });
       return;
     }
@@ -63,28 +61,12 @@ export const uploadAvatar = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    const bucket = getBucket();
-    const filename = `avatar-${id}`;
+    // Um arquivo por usuário: o novo substitui o anterior (upsert no Storage).
+    await avatarStorage().save(id, req.file.buffer, req.file.mimetype);
 
-    // Remove arquivo anterior se existir
-    const existing = await bucket.find({ filename }).toArray();
-    for (const f of existing) {
-      await bucket.delete(f._id);
-    }
-
-    // Faz upload do novo arquivo
-    const uploadStream = bucket.openUploadStream(filename, {
-      metadata: { contentType: req.file.mimetype },
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      uploadStream.on('finish', resolve);
-      uploadStream.on('error', reject);
-      uploadStream.end(req.file!.buffer);
-    });
-
+    // Continua relativo ao backend: o frontend monta `${baseURL}${avatarUrl}`.
     const avatarUrl = `/api/users/${id}/avatar`;
-    await User.findByIdAndUpdate(id, { avatarUrl });
+    await prisma.user.update({ where: { id }, data: { avatarUrl } });
 
     res.status(200).json({ avatarUrl });
   } catch (err) {
@@ -95,21 +77,18 @@ export const uploadAvatar = async (req: Request, res: Response): Promise<void> =
 
 export const getAvatar = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
-    const bucket = getBucket();
-    const filename = `avatar-${id}`;
+    // Rota pública: o id vira caminho no Storage, então só aceita UUID.
+    const id = req.params.id as string;
+    const avatar = isUuid(id) ? await avatarStorage().load(id) : null;
 
-    const files = await bucket.find({ filename }).toArray();
-
-    if (!files.length) {
+    if (!avatar) {
       res.status(404).json({ error: 'Avatar não encontrado.' });
       return;
     }
 
-    res.setHeader('Content-Type', files[0].metadata?.contentType || 'image/jpeg');
+    res.setHeader('Content-Type', avatar.contentType);
     res.setHeader('Cache-Control', 'public, max-age=3600');
-
-    bucket.openDownloadStreamByName(filename).pipe(res);
+    res.send(avatar.data);
   } catch (err) {
     console.error('Erro ao buscar avatar:', err);
     res.status(500).json({ error: 'Erro interno do servidor.' });

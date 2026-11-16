@@ -25,11 +25,6 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if ((err as any)?.code === 11000) {
-      res.status(409).json({ error: 'Email já cadastrado.' });
-      return;
-    }
-
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
 };

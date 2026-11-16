@@ -1,25 +1,28 @@
 import { Request, Response } from 'express';
-import { randomUUID } from 'crypto';
 import { z } from 'zod';
-import Driver from '../models/Driver';
-import Ride from '../models/Ride';
-import User from '../models/User';
-import Passenger from '../models/Passenger';
-import UnavailablePeriod from '../models/UnavailablePeriod';
-import Vehicle from '../models/Vehicle';
+import { prisma } from '../lib/prisma';
+import { serialize, parseDate } from '../lib/serialize';
+import { isNotFound, isUniqueViolation } from '../lib/errors';
+import { hashPassword } from '../services/authService';
+
+// "Hoje" em UTC, como antes (pendência conhecida: usar o fuso do Brasil).
+const hojeUTC = () => parseDate(new Date().toISOString().slice(0, 10));
 
 // GET /api/drivers — lista todos os motoristas com veículo (para passageiros)
 export const listDrivers = async (req: Request, res: Response): Promise<void> => {
   try {
     // Visão pública: sem email do motorista e sem dados financeiros (lucroTotal)
-    const drivers = await Driver.find().select('-lucroTotal').populate('userId', 'nome avatarUrl');
-    const driverIds = drivers.map(d => d._id);
-    const vehicles = await Vehicle.find({ driverId: { $in: driverIds } });
-    const vehicleMap = new Map(vehicles.map(v => [v.driverId.toString(), v]));
+    const drivers = await prisma.driver.findMany({
+      omit: { lucroTotal: true },
+      include: { user: { select: { id: true, nome: true, avatarUrl: true } }, vehicle: true },
+      orderBy: { createdAt: 'asc' },
+    });
 
-    const result = drivers.map(d => ({
-      ...d.toObject(),
-      vehicle: vehicleMap.get(d._id.toString()) ?? null,
+    // Mesmo formato do populate antigo: userId vira { _id, nome, avatarUrl }
+    const result = drivers.map(({ user, vehicle, ...driver }) => ({
+      ...serialize(driver),
+      userId: serialize(user),
+      vehicle: vehicle ? serialize(vehicle) : null, // null explícito: depois do serialize
     }));
 
     res.json(result);
@@ -35,9 +38,13 @@ const pricingSchema = z.object({
 // 3.1 — GET /api/drivers/:driverId
 export const getDriver = async (req: Request, res: Response): Promise<void> => {
   try {
-    const driver = await Driver.findById(req.params.driverId).populate('userId', '-passwordHash');
+    const driver = await prisma.driver.findUnique({
+      where: { id: req.params.driverId as string },
+      include: { user: true }, // passwordHash já vem omitido pelo client
+    });
     if (!driver) { res.status(404).json({ error: 'Motorista não encontrado.' }); return; }
-    res.json(driver);
+    const { user, ...rest } = driver;
+    res.json({ ...serialize(rest), userId: serialize(user) });
   } catch {
     res.status(400).json({ error: 'ID inválido.' });
   }
@@ -47,11 +54,11 @@ export const getDriver = async (req: Request, res: Response): Promise<void> => {
 export const updatePricing = async (req: Request, res: Response): Promise<void> => {
   try {
     const { precoKm } = pricingSchema.parse(req.body);
-    const driver = await Driver.findByIdAndUpdate(req.params.driverId, { precoKm }, { new: true });
-    if (!driver) { res.status(404).json({ error: 'Motorista não encontrado.' }); return; }
-    res.json(driver);
+    const driver = await prisma.driver.update({ where: { id: req.params.driverId as string }, data: { precoKm } });
+    res.json(serialize(driver));
   } catch (err: any) {
     if (err.name === 'ZodError') { res.status(422).json({ error: err.issues[0].message }); return; }
+    if (isNotFound(err)) { res.status(404).json({ error: 'Motorista não encontrado.' }); return; }
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
 };
@@ -59,11 +66,15 @@ export const updatePricing = async (req: Request, res: Response): Promise<void> 
 // 4.1 — PUT /api/drivers/:driverId/availability
 export const toggleAvailability = async (req: Request, res: Response): Promise<void> => {
   try {
-    const driver = await Driver.findById(req.params.driverId);
+    const id = req.params.driverId as string;
+    const driver = await prisma.driver.findUnique({ where: { id }, select: { disponivel: true } });
     if (!driver) { res.status(404).json({ error: 'Motorista não encontrado.' }); return; }
-    driver.disponivel = !driver.disponivel;
-    await driver.save();
-    res.json({ disponivel: driver.disponivel });
+    const updated = await prisma.driver.update({
+      where: { id },
+      data: { disponivel: !driver.disponivel },
+      select: { disponivel: true },
+    });
+    res.json({ disponivel: updated.disponivel });
   } catch {
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
@@ -72,10 +83,13 @@ export const toggleAvailability = async (req: Request, res: Response): Promise<v
 // 4.2 — GET /api/drivers/:driverId/summary
 export const getTodaySummary = async (req: Request, res: Response): Promise<void> => {
   try {
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const rides = await Ride.find({ driverId: req.params.driverId, status: 'concluida', data: today });
-    const ganhos = rides.reduce((sum, r) => sum + r.valor, 0);
-    res.json({ corridas: rides.length, ganhosEstimados: parseFloat(ganhos.toFixed(2)) });
+    const agg = await prisma.ride.aggregate({
+      where: { driverId: req.params.driverId as string, status: 'concluida', data: hojeUTC() },
+      _count: true,
+      _sum: { valor: true },
+    });
+    const ganhos = agg._sum.valor?.toNumber() ?? 0;
+    res.json({ corridas: agg._count, ganhosEstimados: parseFloat(ganhos.toFixed(2)) });
   } catch {
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
@@ -84,13 +98,15 @@ export const getTodaySummary = async (req: Request, res: Response): Promise<void
 // 4.3 — GET /api/drivers/:driverId/next-ride
 export const getNextRide = async (req: Request, res: Response): Promise<void> => {
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const ride = await Ride.findOne({
-      driverId: req.params.driverId,
-      status: { $in: ['pendente', 'em_andamento'] },
-      data: { $gte: today },
-    }).sort({ data: 1, hora: 1 });
-    res.json(ride ?? null);
+    const ride = await prisma.ride.findFirst({
+      where: {
+        driverId: req.params.driverId as string,
+        status: { in: ['pendente', 'em_andamento'] },
+        data: { gte: hojeUTC() },
+      },
+      orderBy: [{ data: 'asc' }, { hora: 'asc' }],
+    });
+    res.json(ride ? serialize(ride) : null);
   } catch {
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
@@ -99,7 +115,7 @@ export const getNextRide = async (req: Request, res: Response): Promise<void> =>
 // 4.4 — GET /api/drivers/:driverId/pending-count
 export const getPendingCount = async (req: Request, res: Response): Promise<void> => {
   try {
-    const count = await Ride.countDocuments({ driverId: req.params.driverId, status: 'pendente' });
+    const count = await prisma.ride.count({ where: { driverId: req.params.driverId as string, status: 'pendente' } });
     res.json({ pendentes: count });
   } catch {
     res.status(500).json({ error: 'Erro interno do servidor.' });
@@ -109,35 +125,28 @@ export const getPendingCount = async (req: Request, res: Response): Promise<void
 // 6.1 — GET /api/drivers/:driverId/schedule?year=&month=
 export const getScheduleMonth = async (req: Request, res: Response): Promise<void> => {
   try {
+    const driverId = req.params.driverId as string;
     const year = parseInt(req.query.year as string) || new Date().getFullYear();
     const month = parseInt(req.query.month as string) || new Date().getMonth() + 1;
 
-    const prefix = `${year}-${String(month).padStart(2, '0')}`;
+    const inicio = new Date(Date.UTC(year, month - 1, 1));
+    const fim = new Date(Date.UTC(year, month, 0)); // último dia do mês
 
-    const rides = await Ride.find({
-      driverId: req.params.driverId,
-      data: { $regex: `^${prefix}` },
-    }).select('data status');
+    const rides = await prisma.ride.groupBy({
+      by: ['data'],
+      where: { driverId, data: { gte: inicio, lte: fim } },
+      _count: { _all: true },
+      orderBy: { data: 'asc' },
+    });
 
-    // Agrupa por dia
-    const byDay: Record<number, number> = {};
-    for (const r of rides) {
-      const day = parseInt(r.data.split('-')[2]);
-      byDay[day] = (byDay[day] ?? 0) + 1;
-    }
-
-    const periods = await UnavailablePeriod.find({
-      driverId: req.params.driverId,
-      dataInicio: { $lte: new Date(`${prefix}-31`) },
-      dataFim: { $gte: new Date(`${prefix}-01`) },
-    }).select('dataInicio dataFim motivo');
+    const periods = await prisma.unavailablePeriod.findMany({
+      where: { driverId, dataInicio: { lte: fim }, dataFim: { gte: inicio } },
+      select: { id: true, dataInicio: true, dataFim: true, motivo: true },
+    });
 
     res.json({
-      dias: Object.entries(byDay).map(([dia, totalCorridas]) => ({
-        dia: parseInt(dia),
-        totalCorridas,
-      })),
-      periodosIndisponiveis: periods,
+      dias: rides.map((r) => ({ dia: r.data.getUTCDate(), totalCorridas: r._count._all })),
+      periodosIndisponiveis: serialize(periods),
     });
   } catch {
     res.status(500).json({ error: 'Erro interno do servidor.' });
@@ -157,23 +166,25 @@ export const registerPassenger = async (req: Request, res: Response): Promise<vo
     const data = createPassengerSchema.parse(req.body);
     const email = data.email.toLowerCase().trim();
 
-    const existing = await User.findOne({ email });
+    const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
     if (existing) { res.status(409).json({ error: 'Este email já está cadastrado.' }); return; }
 
-    const user = await User.create({
-      firebaseUid: randomUUID(),
-      nome: data.nome,
-      email,
-      telefone: data.telefone,
-      tipo: 'passageiro',
-      passwordHash: data.senha,
+    // Usuário + perfil de passageiro numa única escrita atômica.
+    const user = await prisma.user.create({
+      data: {
+        nome: data.nome,
+        email,
+        telefone: data.telefone,
+        tipo: 'passageiro',
+        passwordHash: await hashPassword(data.senha),
+        passenger: { create: { createdByDriverId: req.params.driverId as string } },
+      },
     });
 
-    await Passenger.create({ userId: user._id, createdByDriver: req.params.driverId } as any);
-
-    res.status(201).json({ _id: user._id, nome: user.nome, email: user.email, telefone: user.telefone });
+    res.status(201).json({ _id: user.id, nome: user.nome, email: user.email, telefone: user.telefone });
   } catch (err: any) {
     if (err.name === 'ZodError') { res.status(422).json({ error: err.issues[0].message }); return; }
+    if (isUniqueViolation(err, 'email')) { res.status(409).json({ error: 'Este email já está cadastrado.' }); return; }
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
 };
@@ -181,21 +192,21 @@ export const registerPassenger = async (req: Request, res: Response): Promise<vo
 // GET /api/drivers/:driverId/passengers — passageiros do motorista (criados por ele + que já pediram corrida com ele)
 export const listDriverPassengers = async (req: Request, res: Response): Promise<void> => {
   try {
-    const driverId = req.params.driverId;
+    const driverId = req.params.driverId as string;
 
-    const created = await Passenger.find({ createdByDriver: driverId }).select('userId');
-    const createdIds = created.map(p => p.userId?.toString()).filter(Boolean) as string[];
+    const users = await prisma.user.findMany({
+      where: {
+        tipo: 'passageiro',
+        OR: [
+          { passenger: { createdByDriverId: driverId } },
+          { rides: { some: { driverId } } },
+        ],
+      },
+      select: { id: true, nome: true, email: true, telefone: true },
+      orderBy: { nome: 'asc' },
+    });
 
-    const rideIds = (await Ride.distinct('passageiroId', { driverId, passageiroId: { $ne: null } }))
-      .map((id: any) => id.toString());
-
-    const allIds = [...new Set([...createdIds, ...rideIds])];
-
-    const users = await User.find({ _id: { $in: allIds }, tipo: 'passageiro' })
-      .select('nome email telefone')
-      .sort({ nome: 1 });
-
-    res.json(users);
+    res.json(serialize(users));
   } catch {
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }

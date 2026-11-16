@@ -75,7 +75,7 @@ test('quote valida o valor (zero, negativo, absurdo -> 422)', async () => {
 });
 
 test('quote e confirm em corrida inexistente -> 404', async () => {
-  const fake = '64b000000000000000000000';
+  const fake = '00000000-0000-4000-8000-000000000000';
   assert.equal((await api('PUT', `/api/rides/${fake}/quote`, { token: motorista.token, body: { valor: 10 } })).status, 404);
   assert.equal((await api('PUT', `/api/rides/${fake}/confirm`, { token: passageiro.token })).status, 404);
 });
@@ -96,7 +96,7 @@ test('solicitação valida os campos (422) e o motorista (404)', async () => {
 
   const semMotorista = await api('POST', '/api/rides/request', {
     token: passageiro.token,
-    body: { driverId: '64b000000000000000000000', ...RIDE_BODY },
+    body: { driverId: '00000000-0000-4000-8000-000000000000', ...RIDE_BODY },
   });
   assert.equal(semMotorista.status, 404);
 });
@@ -130,7 +130,7 @@ test('corrida manual: só o motorista dono cria (403) e valida o corpo (422)', a
   assert.equal((await api('POST', '/api/rides', { token: passageiro.token, body: corpo })).status, 403);
   assert.equal((await api('POST', '/api/rides', { token: motorista.token, body: { ...corpo, valor: 0 } })).status, 422);
   assert.equal(
-    (await api('POST', '/api/rides', { token: motorista.token, body: { ...corpo, driverId: '64b000000000000000000000' } })).status,
+    (await api('POST', '/api/rides', { token: motorista.token, body: { ...corpo, driverId: '00000000-0000-4000-8000-000000000000' } })).status,
     404,
   );
 });
@@ -183,7 +183,7 @@ test('passageiro e motorista podem cancelar antes e durante a corrida', async ()
 
 test('status: id malformado -> 400, inexistente -> 404', async () => {
   assert.equal((await setStatus('abc', motorista, 'cancelada')).status, 400);
-  assert.equal((await setStatus('64b000000000000000000000', motorista, 'cancelada')).status, 404);
+  assert.equal((await setStatus('00000000-0000-4000-8000-000000000000', motorista, 'cancelada')).status, 404);
 });
 
 test('concluir repetido ou simultâneo soma o lucro uma única vez', async () => {

@@ -1,9 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import User from '../models/User';
+import type { User } from '@prisma/client';
+import { prisma } from '../lib/prisma';
+
+// Usuário autenticado (o client omite passwordHash por padrão).
+export type AuthUser = Omit<User, 'passwordHash'>;
 
 export interface AuthenticatedRequest extends Request {
-  user: any;
+  user: AuthUser;
 }
 
 export const authMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -19,7 +23,8 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { id: string; tipo: string };
 
-    const user = await User.findById(decoded.id);
+    // Tokens antigos (ObjectId do Mongo) caem no catch: id não é UUID -> 401.
+    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
 
     if (!user) {
       res.status(401).json({ error: 'Usuário não encontrado.' });
