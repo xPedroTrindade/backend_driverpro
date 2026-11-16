@@ -1,293 +1,179 @@
-# Procedures e Triggers — SQL vs MongoDB/Mongoose
+# Procedures e Triggers — SQL vs Serviços Transacionais (Prisma)
 
 ## Contexto
 
-O projeto DriverPro utiliza MongoDB como banco de dados. MongoDB não possui suporte nativo a stored procedures ou triggers SQL. Este documento apresenta:
+O DriverPro usa **PostgreSQL** (Supabase) com **Prisma**. O Postgres suporta procedures e triggers (PL/pgSQL). Mesmo assim, a lógica de negócio fica na **camada de serviço** em TypeScript, executada dentro de **transações** do Prisma:
 
-1. O equivalente SQL de cada lógica implementada (para fins acadêmicos)
-2. Como a mesma lógica foi implementada no projeto usando Node.js/Mongoose
+- fica junto do resto da regra de negócio e é coberta pelos testes de contrato (`tests/`);
+- é versionada e revisada como código, sem lógica escondida no banco;
+- os textos das notificações e o envio de e-mail (que não cabem num trigger) ficam no mesmo lugar.
+
+O banco continua responsável pela **integridade**: FK, UNIQUE, CHECK e EXCLUDE (ver `denormalization.md`).
+
+Este documento mostra, para fins acadêmicos, o equivalente em PL/pgSQL de cada lógica e como ela foi implementada no projeto.
 
 ---
 
 ## PROCEDURE — Registro de Usuário
 
-### Equivalente SQL (T-SQL / SQL Server)
+### Equivalente SQL (PL/pgSQL)
 
 ```sql
-CREATE PROCEDURE sp_RegistrarUsuario
-    @firebaseUid  VARCHAR(128),
-    @nome         VARCHAR(100),
-    @email        VARCHAR(255),
-    @telefone     VARCHAR(15),
-    @tipo         VARCHAR(20),
-    @precoKm      DECIMAL(5,2) = NULL
-AS
+CREATE PROCEDURE sp_registrar_usuario(
+  p_nome TEXT, p_email TEXT, p_password_hash TEXT, p_telefone TEXT,
+  p_tipo "UserTipo", p_preco_km DECIMAL DEFAULT 0
+)
+LANGUAGE plpgsql AS $$
+DECLARE v_user_id UUID := gen_random_uuid();
 BEGIN
-    SET NOCOUNT ON;
-    BEGIN TRANSACTION;
+  -- Consistência: e-mail duplicado (o UNIQUE também barraria)
+  IF EXISTS (SELECT 1 FROM users WHERE email = lower(p_email)) THEN
+    RAISE EXCEPTION 'Este email já está cadastrado.' USING ERRCODE = 'unique_violation';
+  END IF;
 
-    -- Consistência 1: e-mail duplicado
-    IF EXISTS (SELECT 1 FROM users WHERE email = @email)
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('Este e-mail já está cadastrado.', 16, 1);
-        RETURN;
-    END
+  INSERT INTO users (id, nome, email, password_hash, telefone, tipo, updated_at)
+  VALUES (v_user_id, p_nome, lower(p_email), p_password_hash, p_telefone, p_tipo, now());
 
-    -- Consistência 2: firebaseUid duplicado
-    IF EXISTS (SELECT 1 FROM users WHERE firebase_uid = @firebaseUid)
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('Esta conta Firebase já está cadastrada.', 16, 1);
-        RETURN;
-    END
-
-    -- Consistência 3: precoKm obrigatório para motorista
-    IF @tipo = 'motorista' AND (@precoKm IS NULL OR @precoKm <= 0)
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('Preço por km é obrigatório e deve ser maior que zero para motoristas.', 16, 1);
-        RETURN;
-    END
-
-    DECLARE @userId UNIQUEIDENTIFIER = NEWID();
-
-    INSERT INTO users (id, firebase_uid, nome, email, telefone, tipo, created_at, updated_at)
-    VALUES (@userId, @firebaseUid, @nome, @email, @telefone, @tipo, GETDATE(), GETDATE());
-
-    IF @tipo = 'motorista'
-    BEGIN
-        INSERT INTO drivers (id, user_id, preco_km, conta_verificada, disponivel, total_corridas, lucro_total)
-        VALUES (NEWID(), @userId, @precoKm, 0, 1, 0, 0);
-    END
-    ELSE
-    BEGIN
-        INSERT INTO passengers (id, user_id)
-        VALUES (NEWID(), @userId);
-    END
-
-    COMMIT TRANSACTION;
-
-    -- Retorna o usuário criado
-    SELECT id, nome, email, tipo, created_at FROM users WHERE id = @userId;
-END;
-GO
+  IF p_tipo = 'motorista' THEN
+    INSERT INTO drivers (id, user_id, preco_km, updated_at) VALUES (gen_random_uuid(), v_user_id, p_preco_km, now());
+  ELSE
+    INSERT INTO passengers (id, user_id, updated_at) VALUES (gen_random_uuid(), v_user_id, now());
+  END IF;
+  -- Uma CALL roda numa transação: se qualquer INSERT falhar, nada fica gravado.
+END $$;
 ```
 
-### Implementação MongoDB — `src/services/authService.ts`
+### Implementação — `src/services/authService.ts`
 
-| Conceito SQL | Equivalente MongoDB/Node.js |
+| Conceito SQL | Equivalente no projeto |
 |---|---|
-| `BEGIN TRANSACTION` | `session.startTransaction()` |
-| `COMMIT TRANSACTION` | `session.commitTransaction()` |
-| `ROLLBACK TRANSACTION` | `session.abortTransaction()` |
-| `RAISERROR(msg, 16, 1)` | `throw { status: 409, message: '...' }` |
-| `IF EXISTS (SELECT ...)` | `await User.findOne({ email })` |
-| `INSERT INTO users` | `await User.create([...], { session })` |
-| `INSERT INTO drivers` | `await Driver.create([...], { session })` |
+| `BEGIN ... COMMIT` | *Nested create* do Prisma: `user.create({ data: { ..., driver: { create } } })` é atômico |
+| `IF EXISTS (SELECT ...)` | `prisma.user.findUnique({ where: { email } })` |
+| `RAISE EXCEPTION` | `throw { status: 409, message: '...' }` |
+| Corrida entre dois cadastros iguais | O `UNIQUE (email)` barra; o erro P2002 é traduzido em 409 |
+| `lower(p_email)` | Zod: `z.string().trim().toLowerCase().email()` |
 
 ```typescript
-// src/services/authService.ts (simplificado)
-export const registerUser = async (firebaseUid: string, data: RegisterInput) => {
+const user = await prisma.user.create({
+  data: {
+    nome, email, telefone, tipo,
+    passwordHash: await hashPassword(senha),
+    ...(tipo === 'motorista'
+      ? { driver: { create: { precoKm: precoKm ?? 0 } } }
+      : { passenger: { create: {} } }),
+  },
+});
+```
 
-  // Consistência: email/firebaseUid duplicado → equivalente ao IF EXISTS + RAISERROR
-  const existing = await User.findOne({ $or: [{ email: data.email }, { firebaseUid }] });
-  if (existing) {
-    throw { status: 409, message: `Este ${conflict} já está cadastrado.` };
-  }
+---
 
-  // Transação: equivalente ao BEGIN TRANSACTION
-  const session = await mongoose.startSession();
-  session.startTransaction();
+## TRIGGER — Notificar o Motorista ao Criar Corrida
 
-  try {
-    const [user] = await User.create([{ firebaseUid, ...data }], { session });
+### Equivalente SQL (PL/pgSQL)
 
-    if (data.tipo === 'motorista') {
-      await Driver.create([{ userId: user._id, precoKm: data.precoKm }], { session });
-    } else {
-      await Passenger.create([{ userId: user._id }], { session });
-    }
+```sql
+CREATE FUNCTION fn_notificar_nova_corrida() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO notifications (id, user_id, ride_id, tipo, titulo, corpo)
+  SELECT gen_random_uuid(), d.user_id, NEW.id, 'nova_corrida', 'Novo Pedido de Corrida!',
+         'Você tem um novo pedido de ' || NEW.passageiro_nome || '.'
+  FROM drivers d WHERE d.id = NEW.driver_id;
+  RETURN NEW;
+END $$;
 
-    await session.commitTransaction();  // equivalente ao COMMIT
-    return user;
+CREATE TRIGGER tr_notificar_nova_corrida AFTER INSERT ON rides
+FOR EACH ROW EXECUTE FUNCTION fn_notificar_nova_corrida();
+```
 
-  } catch (err) {
-    await session.abortTransaction();   // equivalente ao ROLLBACK
-    throw err;
-  } finally {
-    session.endSession();
-  }
-};
+### Implementação — `rideService.createRide()`
+
+A corrida e a notificação nascem na mesma transação: não existe corrida sem aviso, nem aviso sem corrida.
+
+```typescript
+return prisma.$transaction(async (tx) => {
+  const ride = await tx.ride.create({ data });
+  await createNotification(tx, driverUserId, { tipo: 'nova_corrida', ... });
+  return ride;
+});
 ```
 
 ---
 
 ## TRIGGER — Atualizar Estatísticas ao Concluir Corrida
 
-### Equivalente SQL (T-SQL / SQL Server)
+### Equivalente SQL (PL/pgSQL)
 
 ```sql
-CREATE TRIGGER tr_AtualizarEstatisticasMotorista
-ON rides
-AFTER UPDATE
-AS
+CREATE FUNCTION fn_estatisticas_motorista() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    SET NOCOUNT ON;
+  -- Só reage quando o status mudou para 'concluida'
+  IF NEW.status = 'concluida' AND OLD.status <> 'concluida' THEN
+    UPDATE drivers
+       SET lucro_total    = lucro_total + COALESCE(NEW.lucro_liquido, NEW.valor),
+           total_corridas = total_corridas + 1,
+           updated_at     = now()
+     WHERE id = NEW.driver_id;
 
-    -- Só dispara quando o status mudou para 'concluida'
-    IF NOT EXISTS (
-        SELECT 1 FROM inserted i
-        JOIN deleted d ON i.id = d.id
-        WHERE i.status = 'concluida' AND d.status <> 'concluida'
-    )
-    RETURN;
+    INSERT INTO notifications (id, user_id, ride_id, tipo, titulo, corpo)
+    SELECT gen_random_uuid(), d.user_id, NEW.id, 'corrida_concluida', 'Corrida Concluída',
+           'Corrida de ' || NEW.passageiro_nome || ' concluída. +R$ '
+           || to_char(COALESCE(NEW.lucro_liquido, NEW.valor), 'FM999999990.00') || ' no seu lucro.'
+    FROM drivers d WHERE d.id = NEW.driver_id;
+  END IF;
+  RETURN NEW;
+END $$;
 
-    -- Consistência: garante que o driver existe
-    IF NOT EXISTS (SELECT 1 FROM drivers WHERE id IN (SELECT driver_id FROM inserted))
-    BEGIN
-        RAISERROR('Driver não encontrado para a corrida.', 16, 1);
-        RETURN;
-    END
-
-    -- Atualiza lucro total e contador de corridas do motorista
-    UPDATE d
-    SET
-        d.lucro_total    = d.lucro_total + i.valor,
-        d.total_corridas = d.total_corridas + 1,
-        d.updated_at     = GETDATE()
-    FROM drivers d
-    JOIN inserted i ON d.id = i.driver_id
-    WHERE i.status = 'concluida';
-
-    -- Insere notificação para o motorista
-    INSERT INTO notifications (id, user_id, ride_id, tipo, titulo, corpo, lida, created_at)
-    SELECT
-        NEWID(),
-        d.user_id,
-        i.id,
-        'corrida_concluida',
-        'Corrida Concluída',
-        CONCAT('Corrida de ', i.passageiro_nome, ' concluída. +R$ ',
-               FORMAT(i.valor, 'N2'), ' no seu lucro.'),
-        0,
-        GETDATE()
-    FROM inserted i
-    JOIN drivers d ON d.id = i.driver_id
-    WHERE i.status = 'concluida';
-END;
-GO
+CREATE TRIGGER tr_estatisticas_motorista AFTER UPDATE OF status ON rides
+FOR EACH ROW EXECUTE FUNCTION fn_estatisticas_motorista();
 ```
 
-### Implementação MongoDB — `src/models/Ride.ts`
+### Implementação — `rideService.changeRideStatus()`
 
-| Conceito SQL | Equivalente Mongoose |
+| Conceito SQL | Equivalente no projeto |
 |---|---|
-| `AFTER UPDATE` | `schema.post('findOneAndUpdate', ...)` |
-| `IF inserted.status = 'concluida'` | `if (doc.status === 'concluida')` |
-| `UPDATE drivers SET lucro_total = ...` | `Driver.findByIdAndUpdate(..., { $inc: { lucroTotal: valor } })` |
-| `INSERT INTO notifications` | `Notification.create(...)` |
+| `AFTER UPDATE OF status` | A própria função que muda o status |
+| `OLD.status <> 'concluida'` | `updateMany({ where: { id, status: from } })`: só muda se ainda estiver no status lido |
+| `UPDATE drivers SET lucro_total = ...` | `tx.driver.update({ data: { lucroTotal: { increment } } })` |
+| `INSERT INTO notifications` | `createNotification(tx, ...)` |
+| Tudo na transação do UPDATE | `prisma.$transaction(async (tx) => ...)` |
 
 ```typescript
-// src/models/Ride.ts (hook post-update)
-rideSchema.post('findOneAndUpdate', async function (doc) {
-  if (!doc) return;
+return prisma.$transaction(async (tx) => {
+  const { count } = await tx.ride.updateMany({ where: { id: rideId, status: from }, data: { status: to } });
+  if (count === 0) return null; // outra requisição mudou a corrida → 409, nada somado
 
-  const driver = await Driver.findById(doc.driverId);
-  if (!driver) return;
+  const ride = await tx.ride.findUniqueOrThrow({ where: { id: rideId } });
+  const lucro = ride.lucroLiquido ?? ride.valor;
 
-  // Atualiza estatísticas — equivalente ao UPDATE no trigger SQL
-  if (doc.status === 'concluida') {
-    await Driver.findByIdAndUpdate(doc.driverId, {
-      $inc: { lucroTotal: doc.valor, totalCorridas: 1 }
+  if (to === 'concluida') {
+    await tx.driver.update({
+      where: { id: ride.driverId },
+      data: { lucroTotal: { increment: lucro }, totalCorridas: { increment: 1 } },
     });
   }
-
-  // Notificação — equivalente ao INSERT INTO notifications no trigger SQL
-  if (doc.status === 'concluida') {
-    await Notification.create({
-      userId: driver.userId,
-      rideId: doc._id,
-      tipo: 'corrida_concluida',
-      titulo: 'Corrida Concluída',
-      corpo: `Corrida de ${doc.passageiroNome} concluída. +R$ ${doc.valor.toFixed(2)} no seu lucro.`,
-      lida: false
-    });
-  }
+  await createNotification(tx, driverUserId, { ...STATUS_NOTIFICATION[to](ride, lucro), rideId });
+  return ride;
 });
 ```
+
+Os mesmos padrões valem para o orçamento (`quoteRide`) e a confirmação (`confirmRide`). O e-mail sai **depois** do commit, porque falha de e-mail não deve desfazer a operação.
 
 ---
 
-## TRIGGER — Hash de Senha Antes de Salvar
+## "TRIGGER" — Hash de Senha
 
-### Equivalente SQL (T-SQL / SQL Server)
-
-```sql
-CREATE TRIGGER tr_HashSenhaUsuario
-ON users
-INSTEAD OF INSERT
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Consistência: senha não pode ser vazia
-    IF EXISTS (SELECT 1 FROM inserted WHERE password_hash IS NULL OR password_hash = '')
-    BEGIN
-        RAISERROR('A senha não pode ser vazia.', 16, 1);
-        RETURN;
-    END
-
-    -- Em SQL puro não há bcrypt nativo — em produção usaria HASHBYTES com SHA2_256
-    -- ou delegaria o hash à aplicação antes do INSERT.
-    -- Aqui é representado como documentação do fluxo.
-    INSERT INTO users (id, firebase_uid, nome, email, password_hash, telefone, tipo, created_at, updated_at)
-    SELECT
-        id,
-        firebase_uid,
-        nome,
-        email,
-        -- HASHBYTES('SHA2_256', CONVERT(VARBINARY, password_hash)) -- aproximação SQL
-        password_hash,  -- hash já vem da aplicação
-        telefone,
-        tipo,
-        GETDATE(),
-        GETDATE()
-    FROM inserted;
-END;
-GO
-```
-
-### Implementação MongoDB — `src/models/User.ts`
-
-| Conceito SQL | Equivalente Mongoose |
-|---|---|
-| `INSTEAD OF INSERT` | `schema.pre('save', ...)` |
-| `IF password_hash IS NULL` | `if (!this.passwordHash) return;` |
-| `IF NOT UPDATE(password_hash)` | `if (!this.isModified('passwordHash')) return;` |
-| Hash com bcrypt | `bcrypt.hash(this.passwordHash, 10)` |
-
-```typescript
-// src/models/User.ts
-userSchema.pre('save', async function () {
-  // Só executa se o campo foi definido ou alterado (equivalente ao IF UPDATE())
-  if (!this.isModified('passwordHash') || !this.passwordHash) return;
-
-  // Hash com bcrypt, salt 10 (equivalente ao HASHBYTES na aplicação)
-  this.passwordHash = await bcrypt.hash(this.passwordHash, 10);
-});
-```
+No Mongoose era um hook `pre('save')`. Em SQL não há bcrypt nativo, e o hash **deve** ser feito na aplicação: a senha em texto puro nunca deve chegar ao banco, nem a logs de query. A função `hashPassword()` (`src/services/authService.ts`) é chamada explicitamente antes de cada `create`.
 
 ---
 
 ## Resumo Comparativo
 
-| Recurso SQL | Mongoose/Node.js | Arquivo |
+| Recurso SQL | Implementação | Arquivo |
 |---|---|---|
-| `sp_RegistrarUsuario` | `authService.registerUser()` | `src/services/authService.ts` |
-| `tr_AtualizarEstatisticasMotorista` | `rideSchema.post('findOneAndUpdate')` | `src/models/Ride.ts` |
-| `tr_HashSenhaUsuario` | `userSchema.pre('save')` | `src/models/User.ts` |
-| `BEGIN TRANSACTION / COMMIT` | `session.startTransaction() / commitTransaction()` | `src/services/authService.ts` |
-| `ROLLBACK TRANSACTION` | `session.abortTransaction()` | `src/services/authService.ts` |
-| `RAISERROR` | `throw { status, message }` | `src/services/authService.ts` |
-| `IF EXISTS` | `await Model.findOne(...)` | Services em geral |
+| `sp_registrar_usuario` | `registerUser()` com *nested create* | `src/services/authService.ts` |
+| `tr_notificar_nova_corrida` | `createRide()` em transação | `src/services/rideService.ts` |
+| `tr_estatisticas_motorista` | `changeRideStatus()` em transação | `src/services/rideService.ts` |
+| Hash de senha | `hashPassword()` (bcrypt) | `src/services/authService.ts` |
+| `BEGIN / COMMIT / ROLLBACK` | `prisma.$transaction(async (tx) => ...)` | `src/services/rideService.ts` |
+| `RAISE EXCEPTION` | `throw { status, message }` / resposta 409 | services e controllers |
+| CHECK / UNIQUE / EXCLUDE / FK | No próprio banco | `prisma/migrations/.../migration.sql` |
