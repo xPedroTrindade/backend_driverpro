@@ -1,0 +1,187 @@
+// =============================================================================
+// DriverPro — esquema Postgres (Supabase)
+// -----------------------------------------------------------------------------
+// DATABASE_URL: string do POOLER do Supabase (porta 6543, ?pgbouncer=true) — usada em runtime.
+// DIRECT_URL:   conexão direta/session (porta 5432) — usada só pelo `prisma migrate`.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserTipo {
+  motorista
+  passageiro
+}
+
+enum RideStatus {
+  aguardando_orcamento
+  aguardando_confirmacao
+  confirmada
+  pendente
+  em_andamento
+  concluida
+  cancelada
+}
+
+enum NotificationTipo {
+  corrida_cancelada
+  nova_corrida
+  corrida_aceita
+  corrida_concluida
+  orcamento_recebido
+  corrida_confirmada
+}
+
+enum PeriodoMotivo {
+  manutencao
+  descanso
+  compromisso_pessoal
+  outros
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  nome         String
+  email        String   @unique // sempre gravado em minúsculas pela aplicação
+  passwordHash String   @map("password_hash")
+  telefone     String
+  tipo         UserTipo
+  avatarUrl    String   @default("") @map("avatar_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  driver        Driver?
+  passenger     Passenger?
+  rides         Ride[]         @relation("RidePassenger")
+  notifications Notification[]
+
+  @@map("users")
+}
+
+model Driver {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @map("user_id") @db.Uuid
+  precoKm         Decimal  @default(0) @map("preco_km") @db.Decimal(8, 2)
+  contaVerificada Boolean  @default(false) @map("conta_verificada")
+  disponivel      Boolean  @default(true)
+  totalCorridas   Int      @default(0) @map("total_corridas")
+  lucroTotal      Decimal  @default(0) @map("lucro_total") @db.Decimal(12, 2)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle            Vehicle?
+  rides              Ride[]
+  unavailablePeriods UnavailablePeriod[]
+  passengersCreated  Passenger[]
+
+  @@map("drivers")
+}
+
+model Passenger {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @unique @map("user_id") @db.Uuid
+  // Motorista que cadastrou este passageiro (null se o passageiro se cadastrou sozinho)
+  createdByDriverId String?  @map("created_by_driver_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdByDriver Driver? @relation(fields: [createdByDriverId], references: [id], onDelete: SetNull)
+
+  @@index([createdByDriverId])
+  @@map("passengers")
+}
+
+model Vehicle {
+  id               String   @id @default(uuid()) @db.Uuid
+  driverId         String   @unique @map("driver_id") @db.Uuid // um veículo por motorista
+  modelo           String
+  placa            String   @unique
+  consumoMedio     Decimal? @map("consumo_medio") @db.Decimal(6, 2)
+  lugares          Int?
+  aceitaPets       Boolean  @default(false) @map("aceita_pets")
+  aceitaCadeirinha Boolean  @default(false) @map("aceita_cadeirinha")
+  aceitaVolumes    Boolean  @default(false) @map("aceita_volumes")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@map("vehicles")
+}
+
+model Ride {
+  id               String     @id @default(uuid()) @db.Uuid
+  driverId         String     @map("driver_id") @db.Uuid
+  passageiroId     String?    @map("passageiro_id") @db.Uuid
+  passageiroNome   String     @map("passageiro_nome")
+  origem           String
+  destino          String
+  distanciaKm      Decimal    @map("distancia_km") @db.Decimal(8, 2)
+  valor            Decimal    @default(0) @db.Decimal(10, 2)
+  idaVolta         Boolean    @default(false) @map("ida_volta")
+  taxaEspera       Decimal    @default(0) @map("taxa_espera") @db.Decimal(10, 2)
+  pedagio          Decimal    @default(0) @db.Decimal(10, 2)
+  consumoMedio     Decimal?   @map("consumo_medio") @db.Decimal(6, 2)
+  combustivelPreco Decimal    @default(0) @map("combustivel_preco") @db.Decimal(8, 2)
+  precoKm          Decimal    @default(0) @map("preco_km") @db.Decimal(8, 2)
+  custoCombustivel Decimal    @default(0) @map("custo_combustivel") @db.Decimal(10, 2)
+  custoTotal       Decimal    @default(0) @map("custo_total") @db.Decimal(10, 2)
+  lucroLiquido     Decimal?   @map("lucro_liquido") @db.Decimal(10, 2)
+  status           RideStatus @default(aguardando_orcamento)
+  // A API continua expondo "YYYY-MM-DD" e "HH:MM" (serializer), mas no banco são tipos reais.
+  data             DateTime   @db.Date
+  hora             DateTime   @db.Time(0)
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  driver        Driver         @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  passageiro    User?          @relation("RidePassenger", fields: [passageiroId], references: [id], onDelete: SetNull)
+  notifications Notification[]
+
+  @@index([driverId, data, hora])
+  @@index([passageiroId, data, hora])
+  @@index([driverId, status])
+  @@map("rides")
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  rideId    String           @map("ride_id") @db.Uuid
+  tipo      NotificationTipo
+  titulo    String
+  corpo     String
+  lida      Boolean          @default(false)
+  criadoEm  DateTime         @default(now()) @map("criado_em")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ride Ride @relation(fields: [rideId], references: [id], onDelete: Cascade)
+
+  @@index([userId, criadoEm(sort: Desc)])
+  @@index([userId, lida])
+  @@map("notifications")
+}
+
+model UnavailablePeriod {
+  id         String        @id @default(uuid()) @db.Uuid
+  driverId   String        @map("driver_id") @db.Uuid
+  dataInicio DateTime      @map("data_inicio") @db.Date
+  dataFim    DateTime      @map("data_fim") @db.Date
+  motivo     PeriodoMotivo @default(outros)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, dataInicio])
+  @@map("unavailable_periods")
+}
