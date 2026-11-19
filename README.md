@@ -24,10 +24,27 @@ npm run dev
 | `GOOGLE_MAPS_API_KEY` | Rotas/distância (`/api/maps`). |
 | `SMTP_*` | Ainda não usado: o envio de e-mail é um stub. |
 
+## Regras de negócio das corridas
+
+**Status** (fluxo único):
+
+```
+pedido do passageiro:  aguardando_orcamento ──(motorista orça)──▶ aguardando_confirmacao ──(passageiro confirma)──▶ confirmada
+corrida manual:        já nasce confirmada
+                       confirmada ──(motorista inicia)──▶ em_andamento ──(motorista conclui)──▶ concluida
+                       qualquer status antes de concluida ──(motorista ou passageiro)──▶ cancelada
+```
+
+- **Lucro calculado no servidor:** combustível = distância (×2 se ida e volta) ÷ consumo × preço do litro; custo = combustível + pedágio; lucro = valor − custo. Se o consumo não vier, usa o do veículo. Valores de custo ou lucro enviados pelo app são ignorados.
+- **Estatísticas do motorista:** ao concluir, `lucroTotal` e `totalCorridas` são somados **na mesma transação** que muda o status, com update condicional ao status lido. Dois "concluir" simultâneos somam uma vez só.
+- **Agenda:** um pedido é recusado (409) se a data cai numa folga do motorista ou se ele já tem corrida ativa no mesmo dia e hora. O horário é garantido por uma `EXCLUDE` no banco, válida mesmo com pedidos simultâneos.
+- **Notificações:** o motorista é avisado de pedido, confirmação, início e conclusão. O passageiro é avisado de orçamento, início e conclusão. No cancelamento, só a outra parte é avisada.
+- **"Hoje"** (resumo do dia, próxima corrida) é calculado no fuso de Brasília, não no UTC do servidor.
+
 ## Banco de dados
 
 - Esquema: `prisma/schema.prisma`. Migrations versionadas em `prisma/migrations/`.
-- A migration inicial também cria o que o Prisma não declara: CHECKs, a `EXCLUDE` que impede folgas sobrepostas (extensão `btree_gist`) e **RLS ligado sem policies** em todas as tabelas, o que fecha a API REST pública do Supabase.
+- As migrations também criam o que o Prisma não declara: CHECKs, as `EXCLUDE` que impedem folgas sobrepostas e corridas no mesmo horário (extensão `btree_gist`) e **RLS ligado sem policies** em todas as tabelas, o que fecha a API REST pública do Supabase.
 - Nova mudança de esquema: edite o `schema.prisma` e rode `prisma migrate dev --name <nome>`.
 - Mais detalhes em [docs/database/](docs/database/).
 
@@ -37,7 +54,7 @@ npm run dev
 npm test
 ```
 
-São 49 testes de contrato que falam só HTTP com a API. Cada arquivo de teste sobe um **Postgres embutido** (`embedded-postgres`, mesma versão do Supabase), aplica as migrations reais e apaga tudo no fim. Não precisa de Docker nem de internet, e nunca toca no banco do Supabase. Na primeira execução o pacote extrai os binários do Postgres.
+São 57 testes de contrato, que falam só HTTP com a API, e 1 teste de unidade (fuso horário). Cada arquivo de teste sobe um **Postgres embutido** (`embedded-postgres`, mesma versão do Supabase), aplica as migrations reais e apaga tudo no fim. Não precisa de Docker nem de internet, e nunca toca no banco do Supabase. Na primeira execução o pacote extrai os binários do Postgres.
 
 ```bash
 npx tsc --noEmit     # checagem de tipos
@@ -58,7 +75,8 @@ src/
   lib/serialize.ts         converte linhas do Prisma no JSON da API (_id, números, "YYYY-MM-DD", "HH:MM")
   lib/errors.ts            reconhece erros do Prisma/Postgres (P2002, P2023, 23P01...)
   routes/ controllers/     rotas e handlers HTTP
-  services/                regras com transação (rideService), auth, notificações, avatar
+  lib/time.ts              "hoje" no fuso de Brasília
+  services/                regras com transação (rideService), cálculo de lucro (rideFinance), auth, notificações, avatar
   middlewares/             auth (JWT), ownership, upload
 prisma/                    schema e migrations
 tests/                     testes de contrato (node:test)
