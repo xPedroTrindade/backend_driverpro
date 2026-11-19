@@ -4,8 +4,10 @@ import { RideStatus } from '@prisma/client';
 import { AuthenticatedRequest } from '../middlewares/auth';
 import { prisma } from '../lib/prisma';
 import { serialize, parseDate, parseTime } from '../lib/serialize';
-import { isInvalidId } from '../lib/errors';
+import { isInvalidId, isExclusionViolation } from '../lib/errors';
 import * as rideService from '../services/rideService';
+import type { Papel } from '../services/rideService';
+import { calcularFinanceiro } from '../services/rideFinance';
 import { sendMail } from '../services/mailer';
 
 // HH:MM com hora e minuto válidos (o banco guarda TIME de verdade).
@@ -34,9 +36,8 @@ const createRideSchema = z.object({
   consumoMedio: z.number().positive().optional(),
   combustivelPreco: z.number().nonnegative().optional(),
   precoKm: z.number().nonnegative().optional(),
-  custoCombustivel: z.number().nonnegative().optional(),
-  custoTotal: z.number().nonnegative().optional(),
-  lucroLiquido: z.number().optional(),
+  // custoCombustivel, custoTotal e lucroLiquido NÃO são aceitos do app:
+  // o servidor calcula (rideFinance). Se vierem no corpo, o Zod descarta.
   data: z.string().date('Data inválida. Use YYYY-MM-DD.'),
   hora,
 });
@@ -45,17 +46,15 @@ const statusSchema = z.object({
   status: z.enum(['em_andamento', 'concluida', 'cancelada']),
 });
 
-type Papel = 'motorista' | 'passageiro';
 type StatusAlvo = z.infer<typeof statusSchema>['status'];
 
 // Máquina de estados: status atual -> status de destino -> quem pode fazer a transição.
 // O papel vem da relação com a corrida (dono do driverId ou passageiroId), não do user.tipo.
-// 'pendente' é o fluxo legado (corrida manual); 'confirmada' é o fluxo de orçamento.
+// Orçamento e confirmação têm rotas próprias (/quote e /confirm).
 const TRANSICOES: Record<RideStatus, Partial<Record<StatusAlvo, Papel[]>>> = {
   aguardando_orcamento:   { cancelada: ['motorista', 'passageiro'] },
   aguardando_confirmacao: { cancelada: ['motorista', 'passageiro'] },
   confirmada:             { em_andamento: ['motorista'], cancelada: ['motorista', 'passageiro'] },
-  pendente:               { em_andamento: ['motorista'], cancelada: ['motorista', 'passageiro'] },
   em_andamento:           { concluida: ['motorista'], cancelada: ['motorista', 'passageiro'] },
   concluida:              {},
   cancelada:              {},
@@ -63,12 +62,17 @@ const TRANSICOES: Record<RideStatus, Partial<Record<StatusAlvo, Papel[]>>> = {
 
 const ORDEM_AGENDA = [{ data: 'asc' as const }, { hora: 'asc' as const }];
 
+const HORARIO_OCUPADO = 'O motorista já tem uma corrida neste dia e horário.';
+
 // 5.1 — POST /api/rides
 export const createRide = async (req: Request, res: Response): Promise<void> => {
   try {
     const { data, hora, ...rest } = createRideSchema.parse(req.body);
 
-    const driver = await prisma.driver.findUnique({ where: { id: rest.driverId }, select: { userId: true } });
+    const driver = await prisma.driver.findUnique({
+      where: { id: rest.driverId },
+      select: { userId: true, vehicle: { select: { consumoMedio: true } } },
+    });
     if (!driver) { res.status(404).json({ error: 'Motorista não encontrado.' }); return; }
 
     const authReq = req as AuthenticatedRequest;
@@ -76,13 +80,22 @@ export const createRide = async (req: Request, res: Response): Promise<void> => 
       res.status(403).json({ error: 'Acesso negado.' }); return;
     }
 
-    const ride = await rideService.createRide(
-      { ...rest, data: parseDate(data), hora: parseTime(hora), status: 'pendente' },
-      driver.userId,
-    );
+    // Consumo: o informado na corrida ou, se não vier, o do veículo do motorista.
+    const consumoMedio = rest.consumoMedio ?? driver.vehicle?.consumoMedio ?? undefined;
+
+    // Corrida manual: o motorista já combinou com o cliente, então nasce confirmada.
+    const ride = await rideService.createRide({
+      ...rest,
+      consumoMedio,
+      ...calcularFinanceiro({ ...rest, consumoMedio }),
+      data: parseDate(data),
+      hora: parseTime(hora),
+      status: 'confirmada',
+    }, driver.userId);
     res.status(201).json(serialize(ride));
   } catch (err: any) {
     if (err.name === 'ZodError') { res.status(422).json({ error: err.issues[0].message }); return; }
+    if (isExclusionViolation(err)) { res.status(409).json({ error: HORARIO_OCUPADO }); return; }
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
 };
@@ -115,8 +128,17 @@ export const requestRide = async (req: Request, res: Response): Promise<void> =>
     });
     if (!driver) { res.status(404).json({ error: 'Motorista não encontrado.' }); return; }
 
-    // Novo fluxo: o passageiro solicita SEM preço. O motorista envia o orçamento depois.
+    // Conflito de agenda (1): a data cai numa folga do motorista.
+    const dia = parseDate(data.data);
+    const folga = await prisma.unavailablePeriod.findFirst({
+      where: { driverId: data.driverId, dataInicio: { lte: dia }, dataFim: { gte: dia } },
+      select: { id: true },
+    });
+    if (folga) { res.status(409).json({ error: 'O motorista está indisponível nesta data.' }); return; }
+
+    // O passageiro solicita SEM preço. O motorista envia o orçamento depois.
     // A notificação in-app do motorista nasce na mesma transação (rideService).
+    // Conflito de agenda (2): mesmo dia e hora de outra corrida ativa -> EXCLUDE do banco.
     const ride = await rideService.createRide({
       driverId: data.driverId,
       passageiroId: authReq.user.id,
@@ -125,7 +147,7 @@ export const requestRide = async (req: Request, res: Response): Promise<void> =>
       destino: data.destino,
       distanciaKm: data.distanciaKm,
       valor: 0,
-      data: parseDate(data.data),
+      data: dia,
       hora: parseTime(data.hora),
       status: 'aguardando_orcamento',
     }, driver.userId);
@@ -142,6 +164,7 @@ export const requestRide = async (req: Request, res: Response): Promise<void> =>
     res.status(201).json(serialize(ride));
   } catch (err: any) {
     if (err.name === 'ZodError') { res.status(422).json({ error: err.issues[0].message }); return; }
+    if (isExclusionViolation(err)) { res.status(409).json({ error: HORARIO_OCUPADO }); return; }
     res.status(500).json({ error: 'Erro interno do servidor.' });
   }
 };
@@ -208,7 +231,7 @@ export const updateRideStatus = async (req: Request, res: Response): Promise<voi
     }
 
     // Transação com update condicional ao status lido (ver rideService).
-    const updated = await rideService.changeRideStatus(ride.id, ride.status, status, quem.driverUserId);
+    const updated = await rideService.changeRideStatus(ride.id, ride.status, status, quem.driverUserId, quem.papel);
 
     if (!updated) {
       res.status(409).json({ error: 'A corrida foi alterada por outra ação. Atualize e tente novamente.' }); return;

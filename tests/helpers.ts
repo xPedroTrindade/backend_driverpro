@@ -134,11 +134,20 @@ export const RIDE_BODY = {
   hora: '10:00',
 };
 
-// Passageiro pede corrida (fluxo novo: nasce em aguardando_orcamento).
+// Dia/hora únicos a cada chamada (um motorista não pode ter duas corridas ativas
+// no mesmo horário). Começa em 2030 para não colidir com as datas fixas dos testes.
+let slotSeq = 0;
+export function slot(): { data: string; hora: string } {
+  const d = new Date(Date.UTC(2030, 0, 1 + slotSeq++));
+  return { data: d.toISOString().slice(0, 10), hora: '10:00' };
+}
+
+// Passageiro pede corrida (nasce em aguardando_orcamento). Usa um horário único,
+// a não ser que `extra` traga data/hora.
 export async function requestRide(passenger: Account, driver: Account, extra: object = {}) {
   const r = await api('POST', '/api/rides/request', {
     token: passenger.token,
-    body: { driverId: driver.driverId, ...RIDE_BODY, ...extra },
+    body: { driverId: driver.driverId, ...RIDE_BODY, ...slot(), ...extra },
   });
   if (r.status !== 201) throw new Error(`requestRide falhou: ${r.status} ${JSON.stringify(r.body)}`);
   return r.body;

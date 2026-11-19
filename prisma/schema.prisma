@@ -20,11 +20,12 @@ enum UserTipo {
   passageiro
 }
 
+// Fluxo único: pedido do passageiro -> orçamento -> confirmação -> início -> fim.
+// Corrida manual do motorista já nasce "confirmada".
 enum RideStatus {
   aguardando_orcamento
   aguardando_confirmacao
   confirmada
-  pendente
   em_andamento
   concluida
   cancelada
@@ -147,6 +148,8 @@ model Ride {
   passageiro    User?          @relation("RidePassenger", fields: [passageiroId], references: [id], onDelete: SetNull)
   notifications Notification[]
 
+  // Conflito de agenda: EXCLUDE "rides_sem_conflito_de_horario" (na migration),
+  // pois o Prisma não declara constraints de exclusão.
   @@index([driverId, data, hora])
   @@index([passageiroId, data, hora])
   @@index([driverId, status])
@@ -168,6 +171,7 @@ model Notification {
 
   @@index([userId, criadoEm(sort: Desc)])
   @@index([userId, lida])
+  @@index([rideId]) // FK: acelera o ON DELETE CASCADE vindo de rides
   @@map("notifications")
 }
 

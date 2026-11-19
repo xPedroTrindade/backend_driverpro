@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  startApi, stopApi, api, signup, requestRide, confirmedRide, setStatus, driverStats, RIDE_BODY, Account,
+  startApi, stopApi, api, signup, requestRide, confirmedRide, setStatus, driverStats, RIDE_BODY, slot, Account,
 } from './helpers';
 
 let motorista: Account, outroMotorista: Account, passageiro: Account, estranho: Account;
@@ -103,25 +103,123 @@ test('solicitação valida os campos (422) e o motorista (404)', async () => {
 
 // ---------------------------------------------------------------- Corrida manual (motorista)
 
-test('motorista cria corrida manual: nasce pendente e o lucroLiquido entra no lucroTotal', async () => {
+test('motorista cria corrida manual: nasce confirmada e o lucro calculado no servidor entra no lucroTotal', async () => {
   const antes = await driverStats(motorista);
   const r = await api('POST', '/api/rides', {
     token: motorista.token,
     body: {
-      driverId: motorista.driverId, passageiroNome: 'Cliente Avulso', ...RIDE_BODY,
-      valor: 100, lucroLiquido: 70, pedagio: 5, idaVolta: true, taxaEspera: 10, custoTotal: 30,
+      driverId: motorista.driverId, passageiroNome: 'Cliente Avulso', ...RIDE_BODY, ...slot(),
+      valor: 100, pedagio: 5, idaVolta: true, taxaEspera: 10, consumoMedio: 10, combustivelPreco: 6,
+      // valores do app para custo/lucro são ignorados:
+      lucroLiquido: 999, custoTotal: 1, custoCombustivel: 1,
     },
   });
   assert.equal(r.status, 201);
-  assert.equal(r.body.status, 'pendente');
-  assert.equal(r.body.lucroLiquido, 70);
+  assert.equal(r.body.status, 'confirmada');
+  // combustível = 10 km × 2 (ida e volta) ÷ 10 km/l × R$ 6 = 12; custo = 12 + 5 de pedágio
+  assert.equal(r.body.custoCombustivel, 12);
+  assert.equal(r.body.custoTotal, 17);
+  assert.equal(r.body.lucroLiquido, 83);
   assert.equal(r.body.pedagio, 5);
   assert.equal(r.body.idaVolta, true);
 
   assert.equal((await setStatus(r.body._id, motorista, 'em_andamento')).status, 200);
   assert.equal((await setStatus(r.body._id, motorista, 'concluida')).status, 200);
   const depois = await driverStats(motorista);
-  assert.equal(depois.lucroTotal, antes.lucroTotal + 70);
+  assert.equal(depois.lucroTotal, antes.lucroTotal + 83);
+});
+
+test('corrida manual sem consumo informado usa o consumo do veículo; sem preço do combustível, custo é só o pedágio', async () => {
+  const m = await signup('motorista', 'Consumo');
+  await api('POST', '/api/vehicles', { token: m.token, body: { driverId: m.driverId, modelo: 'Gol', placa: 'CNS1A11', consumoMedio: 8 } });
+  const base = { driverId: m.driverId, passageiroNome: 'Cliente', ...RIDE_BODY, distanciaKm: 40 };
+
+  const comPreco = await api('POST', '/api/rides', { token: m.token, body: { ...base, ...slot(), valor: 100, combustivelPreco: 5 } });
+  assert.equal(comPreco.status, 201);
+  assert.equal(comPreco.body.consumoMedio, 8);           // veio do veículo
+  assert.equal(comPreco.body.custoCombustivel, 25);      // 40 ÷ 8 × 5
+  assert.equal(comPreco.body.lucroLiquido, 75);
+
+  const semPreco = await api('POST', '/api/rides', { token: m.token, body: { ...base, ...slot(), valor: 100, pedagio: 7.5 } });
+  assert.equal(semPreco.body.custoCombustivel, 0);
+  assert.equal(semPreco.body.lucroLiquido, 92.5);
+});
+
+test('orçamento define o lucro da corrida pedida pelo passageiro (= valor, sem custos informados)', async () => {
+  const ride = await requestRide(passageiro, motorista);
+  const q = await api('PUT', `/api/rides/${ride._id}/quote`, { token: motorista.token, body: { valor: 55.9 } });
+  assert.equal(q.body.lucroLiquido, 55.9);
+  assert.equal(q.body.custoTotal, 0);
+});
+
+// ---------------------------------------------------------------- Conflito de agenda
+
+test('pedido no mesmo dia e hora de outra corrida ativa do motorista -> 409; cancelada libera o horário', async () => {
+  const m = await signup('motorista', 'AgendaCheia');
+  const horario = { data: '2027-11-20', hora: '14:00' };
+  const primeira = await requestRide(passageiro, m, horario);
+
+  const conflito = await api('POST', '/api/rides/request', { token: estranho.token, body: { driverId: m.driverId, ...RIDE_BODY, ...horario } });
+  assert.equal(conflito.status, 409);
+
+  // outro horário no mesmo dia e o mesmo horário com OUTRO motorista: ok
+  assert.equal((await api('POST', '/api/rides/request', { token: estranho.token, body: { driverId: m.driverId, ...RIDE_BODY, ...horario, hora: '15:00' } })).status, 201);
+  assert.equal((await api('POST', '/api/rides/request', { token: estranho.token, body: { driverId: outroMotorista.driverId, ...RIDE_BODY, ...horario } })).status, 201);
+
+  // corrida manual do próprio motorista também respeita a agenda
+  const manual = { driverId: m.driverId, passageiroNome: 'Cliente', ...RIDE_BODY, ...horario, valor: 50 };
+  assert.equal((await api('POST', '/api/rides', { token: m.token, body: manual })).status, 409);
+
+  await setStatus(primeira._id, passageiro, 'cancelada');
+  assert.equal((await api('POST', '/api/rides/request', { token: estranho.token, body: { driverId: m.driverId, ...RIDE_BODY, ...horario } })).status, 201);
+});
+
+test('pedidos simultâneos para o mesmo horário: só um passa', async () => {
+  const m = await signup('motorista', 'Disputado');
+  const body = { driverId: m.driverId, ...RIDE_BODY, data: '2027-12-01', hora: '09:30' };
+  const results = await Promise.all(
+    [passageiro, estranho, passageiro, estranho].map(p => api('POST', '/api/rides/request', { token: p.token, body })),
+  );
+  const codes = results.map(r => r.status).sort();
+  assert.deepEqual(codes, [201, 409, 409, 409]);
+});
+
+test('pedido numa data de folga do motorista -> 409', async () => {
+  const m = await signup('motorista', 'DeFolga');
+  await api('POST', '/api/unavailable-periods', {
+    token: m.token, body: { driverId: m.driverId, dataInicio: '2027-10-10', dataFim: '2027-10-12', motivo: 'descanso' },
+  });
+  for (const data of ['2027-10-10', '2027-10-11', '2027-10-12']) {
+    const r = await api('POST', '/api/rides/request', { token: passageiro.token, body: { driverId: m.driverId, ...RIDE_BODY, data } });
+    assert.equal(r.status, 409, data);
+  }
+  assert.equal((await requestRide(passageiro, m, { data: '2027-10-13' })).status, 'aguardando_orcamento');
+});
+
+// ---------------------------------------------------------------- Avisos ao passageiro
+
+test('passageiro é avisado quando o motorista inicia e conclui a corrida', async () => {
+  const p = await signup('passageiro', 'Avisado');
+  const ride = await confirmedRide(p, motorista);
+  await setStatus(ride._id, motorista, 'em_andamento');
+  await setStatus(ride._id, motorista, 'concluida');
+  const tipos = (await notificacoes(p)).filter(n => n.rideId === ride._id).map(n => n.tipo).sort();
+  assert.deepEqual(tipos, ['corrida_aceita', 'corrida_concluida', 'orcamento_recebido']);
+});
+
+test('cancelamento avisa só a outra parte', async () => {
+  const p = await signup('passageiro', 'Cancelado');
+  const m = await signup('motorista', 'Cancelador');
+
+  const peloMotorista = await confirmedRide(p, m);
+  await setStatus(peloMotorista._id, m, 'cancelada');
+  assert.ok((await notificacoes(p)).some(n => n.tipo === 'corrida_cancelada' && n.rideId === peloMotorista._id));
+  assert.ok(!(await notificacoes(m)).some(n => n.tipo === 'corrida_cancelada' && n.rideId === peloMotorista._id));
+
+  const peloPassageiro = await requestRide(p, m);
+  await setStatus(peloPassageiro._id, p, 'cancelada');
+  assert.ok((await notificacoes(m)).some(n => n.tipo === 'corrida_cancelada' && n.rideId === peloPassageiro._id));
+  assert.ok(!(await notificacoes(p)).some(n => n.tipo === 'corrida_cancelada' && n.rideId === peloPassageiro._id));
 });
 
 test('corrida manual: só o motorista dono cria (403) e valida o corpo (422)', async () => {
@@ -147,7 +245,7 @@ test('status: transições inválidas -> 409; papel errado -> 403; body inválid
   const ride = await confirmedRide(passageiro, motorista);
   assert.equal((await setStatus(ride._id, passageiro, 'em_andamento')).status, 403); // só o motorista inicia
   assert.equal((await setStatus(ride._id, motorista, 'concluida')).status, 409);     // confirmada -> concluida
-  assert.equal((await setStatus(ride._id, motorista, 'pendente')).status, 422);      // status fora do enum
+  assert.equal((await setStatus(ride._id, motorista, 'pendente')).status, 422);      // status que não existe mais
 
   assert.equal((await setStatus(ride._id, motorista, 'em_andamento')).status, 200);
   assert.equal((await setStatus(ride._id, passageiro, 'concluida')).status, 403);    // só o motorista conclui

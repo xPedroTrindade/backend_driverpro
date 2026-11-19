@@ -4,7 +4,15 @@
 // Substitui os hooks do antigo src/models/Ride.ts (Mongoose):
 //   post('save')             -> createRide        (notifica o motorista)
 //   post('findOneAndUpdate') -> changeRideStatus  (notifica + soma lucro)
-// e também o orçamento/confirmação do fluxo novo.
+// e também o orçamento/confirmação.
+//
+// Fluxo único de status:
+//   pedido do passageiro: aguardando_orcamento -> aguardando_confirmacao -> confirmada
+//   corrida manual do motorista: já nasce confirmada
+//   confirmada -> em_andamento -> concluida   (cancelada a qualquer momento antes do fim)
+//
+// Conflito de agenda: a EXCLUDE "rides_sem_conflito_de_horario" impede duas
+// corridas ativas do mesmo motorista no mesmo dia e hora (erro 23P01 -> 409).
 //
 // Toda mudança de status é um UPDATE condicional ao status lido
 // (WHERE id = ? AND status = ?). Se outra requisição mudou a corrida no meio
@@ -15,6 +23,7 @@
 import { Prisma, RideStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { createNotification, emailUser, NotifyInput } from './notify';
+import { calcularFinanceiro } from './rideFinance';
 
 type Ride = Prisma.RideGetPayload<{}>;
 export type StatusAlvo = Extract<RideStatus, 'em_andamento' | 'concluida' | 'cancelada'>;
@@ -35,7 +44,11 @@ export function createRide(data: Prisma.RideUncheckedCreateInput, driverUserId: 
   });
 }
 
-const STATUS_NOTIFICATION: Record<StatusAlvo, (r: Ride, lucro: Prisma.Decimal) => Omit<NotifyInput, 'rideId'>> = {
+export type Papel = 'motorista' | 'passageiro';
+type Aviso = Omit<NotifyInput, 'rideId'>;
+
+// Avisos ao MOTORISTA por mudança de status.
+const AVISO_MOTORISTA: Record<StatusAlvo, (r: Ride, lucro: Prisma.Decimal) => Aviso> = {
   cancelada: (r) => ({
     tipo: 'corrida_cancelada',
     titulo: 'Corrida Cancelada',
@@ -53,10 +66,39 @@ const STATUS_NOTIFICATION: Record<StatusAlvo, (r: Ride, lucro: Prisma.Decimal) =
   }),
 };
 
-// Muda o status (from -> to). Ao concluir, soma lucro e totalCorridas do motorista
-// na MESMA transação. Retorna null se a corrida não estava mais em `from`.
-export function changeRideStatus(rideId: string, from: RideStatus, to: StatusAlvo, driverUserId: string) {
-  return prisma.$transaction(async (tx) => {
+// Avisos ao PASSAGEIRO por mudança de status (reusam os tipos que o app já conhece).
+const AVISO_PASSAGEIRO: Record<StatusAlvo, (r: Ride) => Aviso> = {
+  cancelada: (r) => ({
+    tipo: 'corrida_cancelada',
+    titulo: 'Corrida cancelada',
+    corpo: `O motorista cancelou sua corrida de ${r.origem} até ${r.destino}.`,
+  }),
+  em_andamento: (r) => ({
+    tipo: 'corrida_aceita',
+    titulo: 'Motorista a caminho',
+    corpo: `Seu motorista iniciou a corrida até ${r.destino}.`,
+  }),
+  concluida: (r) => ({
+    tipo: 'corrida_concluida',
+    titulo: 'Corrida concluída',
+    corpo: `Sua corrida até ${r.destino} foi concluída. Obrigado por viajar com o DriverPro!`,
+  }),
+};
+
+// Muda o status (from -> to) feito por `quem`. Ao concluir, soma lucro e
+// totalCorridas do motorista na MESMA transação. Retorna null se a corrida não
+// estava mais em `from`.
+//
+// Quem é avisado:
+//   cancelar  -> só a OUTRA parte (quem cancelou já sabe)
+//   iniciar / concluir (sempre o motorista) -> motorista e passageiro
+// Corrida manual (sem passageiroId) só avisa o motorista.
+export async function changeRideStatus(
+  rideId: string, from: RideStatus, to: StatusAlvo, driverUserId: string, quem: Papel,
+) {
+  const emails: { userId: string; titulo: string; corpo: string }[] = [];
+
+  const updated = await prisma.$transaction(async (tx) => {
     const { count } = await tx.ride.updateMany({ where: { id: rideId, status: from }, data: { status: to } });
     if (count === 0) return null;
 
@@ -70,9 +112,22 @@ export function changeRideStatus(rideId: string, from: RideStatus, to: StatusAlv
       });
     }
 
-    await createNotification(tx, driverUserId, { ...STATUS_NOTIFICATION[to](ride, lucro), rideId });
+    const avisarMotorista = !(to === 'cancelada' && quem === 'motorista');
+    const avisarPassageiro = ride.passageiroId && !(to === 'cancelada' && quem === 'passageiro');
+
+    if (avisarMotorista) {
+      await createNotification(tx, driverUserId, { ...AVISO_MOTORISTA[to](ride, lucro), rideId });
+    }
+    if (avisarPassageiro) {
+      const n = await createNotification(tx, ride.passageiroId!, { ...AVISO_PASSAGEIRO[to](ride), rideId });
+      emails.push(n);
+    }
     return ride;
   });
+
+  // E-mail ao passageiro só depois do commit (best-effort).
+  for (const e of emails) await emailUser(e.userId, e.titulo, e.corpo);
+  return updated;
 }
 
 // Motorista envia o orçamento: aguardando_orcamento -> aguardando_confirmacao.
@@ -81,9 +136,10 @@ export async function quoteRide(ride: Ride, valor: number) {
   let aviso: { userId: string; titulo: string; corpo: string } | undefined;
 
   const updated = await prisma.$transaction(async (tx) => {
+    // Com o preço definido, o lucro é recalculado no servidor.
     const { count } = await tx.ride.updateMany({
       where: { id: ride.id, status: 'aguardando_orcamento' },
-      data: { valor, status: 'aguardando_confirmacao' },
+      data: { valor, status: 'aguardando_confirmacao', ...calcularFinanceiro({ ...ride, valor }) },
     });
     if (count === 0) return null;
 

@@ -4,9 +4,10 @@ import { prisma } from '../lib/prisma';
 import { serialize, parseDate } from '../lib/serialize';
 import { isNotFound, isUniqueViolation } from '../lib/errors';
 import { hashPassword } from '../services/authService';
+import { hojeBrasil, anoMesBrasil } from '../lib/time';
 
-// "Hoje" em UTC, como antes (pendência conhecida: usar o fuso do Brasil).
-const hojeUTC = () => parseDate(new Date().toISOString().slice(0, 10));
+// "Hoje" no fuso de Brasília (o servidor roda em UTC).
+const hoje = () => parseDate(hojeBrasil());
 
 // GET /api/drivers — lista todos os motoristas com veículo (para passageiros)
 export const listDrivers = async (req: Request, res: Response): Promise<void> => {
@@ -84,7 +85,7 @@ export const toggleAvailability = async (req: Request, res: Response): Promise<v
 export const getTodaySummary = async (req: Request, res: Response): Promise<void> => {
   try {
     const agg = await prisma.ride.aggregate({
-      where: { driverId: req.params.driverId as string, status: 'concluida', data: hojeUTC() },
+      where: { driverId: req.params.driverId as string, status: 'concluida', data: hoje() },
       _count: true,
       _sum: { valor: true },
     });
@@ -96,13 +97,14 @@ export const getTodaySummary = async (req: Request, res: Response): Promise<void
 };
 
 // 4.3 — GET /api/drivers/:driverId/next-ride
+// Próxima corrida já combinada (confirmada) ou em andamento, de hoje em diante.
 export const getNextRide = async (req: Request, res: Response): Promise<void> => {
   try {
     const ride = await prisma.ride.findFirst({
       where: {
         driverId: req.params.driverId as string,
-        status: { in: ['pendente', 'em_andamento'] },
-        data: { gte: hojeUTC() },
+        status: { in: ['confirmada', 'em_andamento'] },
+        data: { gte: hoje() },
       },
       orderBy: [{ data: 'asc' }, { hora: 'asc' }],
     });
@@ -113,9 +115,12 @@ export const getNextRide = async (req: Request, res: Response): Promise<void> =>
 };
 
 // 4.4 — GET /api/drivers/:driverId/pending-count
+// Pedidos que esperam uma ação do motorista: enviar o orçamento.
 export const getPendingCount = async (req: Request, res: Response): Promise<void> => {
   try {
-    const count = await prisma.ride.count({ where: { driverId: req.params.driverId as string, status: 'pendente' } });
+    const count = await prisma.ride.count({
+      where: { driverId: req.params.driverId as string, status: 'aguardando_orcamento' },
+    });
     res.json({ pendentes: count });
   } catch {
     res.status(500).json({ error: 'Erro interno do servidor.' });
@@ -126,8 +131,9 @@ export const getPendingCount = async (req: Request, res: Response): Promise<void
 export const getScheduleMonth = async (req: Request, res: Response): Promise<void> => {
   try {
     const driverId = req.params.driverId as string;
-    const year = parseInt(req.query.year as string) || new Date().getFullYear();
-    const month = parseInt(req.query.month as string) || new Date().getMonth() + 1;
+    const atual = anoMesBrasil();
+    const year = parseInt(req.query.year as string) || atual.ano;
+    const month = parseInt(req.query.month as string) || atual.mes;
 
     const inicio = new Date(Date.UTC(year, month - 1, 1));
     const fim = new Date(Date.UTC(year, month, 0)); // último dia do mês

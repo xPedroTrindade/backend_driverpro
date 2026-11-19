@@ -97,6 +97,27 @@ test('summary, next-ride e pending-count respondem no formato esperado (motorist
   }
 });
 
+test('pending-count conta pedidos aguardando orçamento; next-ride traz a próxima confirmada', async () => {
+  const m = await signup('motorista', 'Proxima');
+  const p = await signup('passageiro', 'PassProx');
+
+  const a = await requestRide(p, m, { data: '2027-04-02', hora: '08:00' });
+  await requestRide(p, m, { data: '2027-04-01', hora: '08:00' });
+  const pend = await api('GET', `/api/drivers/${m.driverId}/pending-count`, { token: m.token });
+  assert.deepEqual(pend.body, { pendentes: 2 });
+
+  // pedido ainda sem orçamento não é "próxima corrida"
+  assert.equal((await api('GET', `/api/drivers/${m.driverId}/next-ride`, { token: m.token })).body, null);
+
+  await api('PUT', `/api/rides/${a._id}/quote`, { token: m.token, body: { valor: 40 } });
+  await api('PUT', `/api/rides/${a._id}/confirm`, { token: p.token });
+  assert.deepEqual((await api('GET', `/api/drivers/${m.driverId}/pending-count`, { token: m.token })).body, { pendentes: 1 });
+
+  const next = await api('GET', `/api/drivers/${m.driverId}/next-ride`, { token: m.token });
+  assert.equal(next.body._id, a._id);
+  assert.equal(next.body.status, 'confirmada');
+});
+
 test('schedule do mês agrupa corridas por dia e traz períodos indisponíveis', async () => {
   const m = await signup('motorista', 'Calendario');
   const p = await signup('passageiro', 'PassCal');
