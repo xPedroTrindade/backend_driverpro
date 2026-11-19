@@ -52,10 +52,11 @@ rides
   origem / destino   TEXT
   distancia_km       DECIMAL(8,2)  CHECK > 0
   valor, taxa_espera, pedagio, custo_combustivel, custo_total  DECIMAL(10,2) CHECK >= 0
-  lucro_liquido      DECIMAL(10,2) NULL
-  status             "RideStatus"
+  custo_combustivel, custo_total, lucro_liquido   -- calculados pelo servidor
+  status             "RideStatus" (aguardando_orcamento → aguardando_confirmacao → confirmada → em_andamento → concluida | cancelada)
   data               DATE
   hora               TIME(0)
+  EXCLUDE: duas corridas ATIVAS do mesmo motorista não ocupam o mesmo dia e hora
 
 unavailable_periods
   id           UUID PK
@@ -97,6 +98,16 @@ O login e o perfil básico são iguais para os dois papéis. O que é específic
 
 `valor`, `preco_km`, `lucro_total` etc. são `DECIMAL`. Isso evita erros de arredondamento como `0.1 + 0.2 = 0.30000000000000004` ao somar o lucro de muitas corridas. A API continua devolvendo número no JSON: o serializer converte `Decimal` em `number`.
 
+O custo e o lucro da corrida são **calculados no servidor** (`src/services/rideFinance.ts`), e os valores enviados pelo app são ignorados:
+
+```
+combustível = distância (×2 se ida e volta) ÷ consumo (km/l) × preço do litro
+custo total = combustível + pedágio
+lucro       = valor − custo total
+```
+
+Se o consumo não vier na corrida, o servidor usa o do veículo do motorista. Sem preço do combustível, o custo de combustível é 0. Na corrida pedida pelo passageiro, o lucro é calculado quando o motorista envia o orçamento.
+
 #### 3. `data` e `hora` com tipos reais
 
 No MongoDB eram strings `"YYYY-MM-DD"` e `"HH:MM"`. Agora são `DATE` e `TIME`, o que permite filtros de intervalo (`data >= hoje`, mês do calendário) e ordenação corretos no banco. A API continua expondo as mesmas strings (`src/lib/serialize.ts`).
@@ -110,6 +121,7 @@ Regras que antes só a aplicação garantia agora o banco também garante:
 | Corrida aponta para um motorista existente | nada impedia | `FOREIGN KEY` |
 | Um veículo por motorista | `findOne` + `create` (sujeito a corrida) | `UNIQUE (driver_id)` |
 | Folgas sem sobreposição | `findOne` + `create` (sujeito a corrida) | `EXCLUDE USING gist` com `daterange` |
+| Motorista sem duas corridas no mesmo horário | nada impedia | `EXCLUDE USING gist (driver_id, data, hora) WHERE status` ativo |
 | Preço por km entre 0 e 50 | só o Zod | Zod + `CHECK` |
 | Apagar usuário apaga o perfil | manual | `ON DELETE CASCADE` |
 

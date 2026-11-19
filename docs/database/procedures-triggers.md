@@ -151,7 +151,9 @@ return prisma.$transaction(async (tx) => {
       data: { lucroTotal: { increment: lucro }, totalCorridas: { increment: 1 } },
     });
   }
-  await createNotification(tx, driverUserId, { ...STATUS_NOTIFICATION[to](ride, lucro), rideId });
+  // Avisos: cancelar avisa só a outra parte; iniciar/concluir avisam motorista e passageiro.
+  if (avisarMotorista) await createNotification(tx, driverUserId, { ...AVISO_MOTORISTA[to](ride, lucro), rideId });
+  if (avisarPassageiro) await createNotification(tx, ride.passageiroId!, { ...AVISO_PASSAGEIRO[to](ride), rideId });
   return ride;
 });
 ```
